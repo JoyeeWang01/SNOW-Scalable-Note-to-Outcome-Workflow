@@ -1,0 +1,19 @@
+# Core dependencies
+pandas>=1.5.0
+numpy>=1.23.0
+scikit-learn>=1.2.0
+
+# LangChain
+langchain>=0.1.0
+langchain-core>=0.1.0
+
+# LLM Provider SDKs
+# For Google Gemini/Vertex AI
+google-cloud-aiplatform>=1.38.0
+
+# For API calls (Claude via AWS Bedrock, Azure OpenAI)
+requests>=2.31.0
+
+# Optional: For enhanced functionality
+# boto3>=1.28.0  # If using AWS Bedrock directly
+# openai>=1.0.0   # If using OpenAI SDK

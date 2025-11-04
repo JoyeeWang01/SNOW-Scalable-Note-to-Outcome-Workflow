@@ -1,0 +1,82 @@
+# Python
+__pycache__/
+*/__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+.claude/settings.local.json
+
+# Data files (do not commit patient data)
+# WARNING: These contain PHI/PII and MUST NOT be committed to public repos
+data/*.csv
+data/*.xlsx
+data/embeddings/*.csv
+data/embeddings/*.xlsx
+*.csv
+*.xlsx
+# Allow template/example files only
+!data/examples/*.csv
+!data/examples/*.xlsx
+
+# Checkpoints and logs
+checkpoints/
+logs/
+*.log
+scripts/logs/
+scripts/evaluation_results/
+**/logs/
+**/evaluation_results/
+
+# Saved features
+saved_features/
+
+# API keys and credentials
+.env
+credentials.json
+api_keys.py
+config/api_claude.py
+config/api_openai.py
+config/api_gemini.py
+
+# Security checklist (internal use only)
+SECURITY_CHECKLIST.md
+
+# Backup files
+*.bak
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# OS
+Thumbs.db

@@ -1,0 +1,45 @@
+"""
+OpenAI API configuration for multi-agent oncology feature extraction.
+
+SETUP INSTRUCTIONS:
+1. Copy this file to 'api_openai.py' (without .template extension)
+2. Fill in your own API credentials below
+3. Ensure 'api_openai.py' is in your .gitignore to prevent committing credentials
+"""
+
+from openai import AzureOpenAI
+
+# API Configuration
+# Replace with your API subscription key
+key = "YOUR_API_KEY_HERE"
+
+# Azure OpenAI Configuration
+API_VERSION = '2024-12-01-preview'  # Update to your API version
+DEPLOYMENT = "gpt-4"  # Replace with your deployment name (e.g., gpt-4, gpt-35-turbo)
+
+# Replace with your Azure OpenAI endpoint URL
+URL = f'YOUR_AZURE_ENDPOINT_HERE/deployments/{DEPLOYMENT}/chat/completions?api-version={API_VERSION}'
+
+# Provider name (do not change)
+llm_provider = "openai"
+
+# Model identifier
+model = DEPLOYMENT
+
+# Headers for API requests
+headers = {
+    'Ocp-Apim-Subscription-Key': key,
+    'Content-Type': 'application/json',
+}
+
+# Azure OpenAI client
+client = AzureOpenAI(
+    api_version=API_VERSION,
+    azure_endpoint=URL,
+    azure_deployment=DEPLOYMENT,
+    default_headers=headers,
+    azure_ad_token=key,
+)
+
+# API URL (for compatibility with existing code)
+url = URL

@@ -1,0 +1,4 @@
+hadm_id,discharge_text
+12345,"DISCHARGE SUMMARY: 65yo with heart failure, admitted for dyspnea and lower extremity edema. Echo showed EF 35%. Improved with IV diuretics. Discharged on furosemide, lisinopril, metformin. Follow-up in 2 weeks."
+67890,"DISCHARGE SUMMARY: 58yo with CAD, presented with chest pain. Cardiac cath showed 80% LAD stenosis, underwent PCI with stent. Troponin peaked at 2.5. Discharged on dual antiplatelet therapy. Follow-up in 1 week."
+11111,"DISCHARGE SUMMARY: 72yo with acute cholecystitis. Underwent laparoscopic cholecystectomy without complications. Pathology confirmed chronic cholecystitis. Discharged on acetaminophen PRN. Follow-up in 2 weeks."

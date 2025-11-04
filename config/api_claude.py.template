@@ -1,0 +1,28 @@
+"""
+Claude API configuration for multi-agent oncology feature extraction.
+
+SETUP INSTRUCTIONS:
+1. Copy this file to 'api_claude.py' (without .template extension)
+2. Fill in your own API credentials below
+3. Ensure 'api_claude.py' is in your .gitignore to prevent committing credentials
+"""
+
+# API Configuration
+# Replace with your Claude API endpoint URL
+url = "YOUR_CLAUDE_API_URL_HERE"
+
+# Replace with your API subscription key
+key = "YOUR_API_KEY_HERE"
+
+# Replace with your Claude model ARN or identifier
+# Example format: "arn:aws:bedrock:REGION:ACCOUNT_ID:inference-profile/MODEL_ID"
+model = "YOUR_MODEL_ARN_HERE"
+
+# Provider name (do not change)
+llm_provider = "claude"
+
+# Headers for API requests
+headers = {
+    'Ocp-Apim-Subscription-Key': key,
+    'Content-Type': 'application/json',
+}

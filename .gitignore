@@ -40,6 +40,7 @@ env/
 # WARNING: These contain PHI/PII and MUST NOT be committed to public repos
 data/*.csv
 data/*.xlsx
+data/embeddings/
 data/embeddings/*.csv
 data/embeddings/*.xlsx
 *.csv
@@ -56,6 +57,9 @@ scripts/logs/
 scripts/evaluation_results/
 **/logs/
 **/evaluation_results/
+
+# Workflow runs
+SNOW_runs/
 
 # Saved features
 saved_features/

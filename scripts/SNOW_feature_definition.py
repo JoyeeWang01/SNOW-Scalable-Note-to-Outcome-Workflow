@@ -34,7 +34,7 @@ from config.SNOW_config import (
     PARALLEL_THREAD_DELAY
 )
 
-# Checkpoint directory (overridden by pipeline to run-specific directory)
+# Checkpoint directory (overridden by workflow to run-specific directory)
 CHECKPOINT_DIR = "checkpoints"
 from core.file_io import (
     load_features_from_file,
@@ -78,7 +78,7 @@ def main(provider: str = "claude", run_dir: str = None):
         print(f"Checkpoint directory (shared): {checkpoint_dir}")
         print(f"Log file: {log_file}")
     else:
-        # Pipeline provided run_dir
+        # Workflow provided run_dir
         from config.SNOW_config import MAIN_RUNS_DIR
         checkpoint_dir = os.path.join(MAIN_RUNS_DIR, "checkpoints")
         detailed_log_dir = os.path.join(run_dir, "detailed_logs")
@@ -179,22 +179,67 @@ def main(provider: str = "claude", run_dir: str = None):
     # ============================================================================
     # Configuration: Choose whether to propose new features or load existing ones
     # ============================================================================
-    # Note: These settings are now imported from config.pipeline_config
+    # Note: These settings are now imported from config.SNOW_config
 
     # ============================================================================
     # Step 1: Proposing or Loading Features
     # ============================================================================
     if PROPOSE_NEW_FEATURES:
-        print("Proposing new features from clinical notes...")
-        raw_features = propose_features(
-            llm_with_tools,
-            NOTES_DESCRIPTION,
-            OUTCOME_DESCRIPTION,
-            STRUCTURED_FEATURES_DESCRIPTION,
-            MAX_NOTE_INDEX
-        )
-        save_features(raw_features, run_dir=run_dir)
-        print(f"Saved {len(raw_features)} proposed features")
+        # Check if features_latest.json already exists
+        from config.SNOW_config import MAIN_RUNS_DIR
+        saved_data_dir = os.path.join(MAIN_RUNS_DIR, "saved_data")
+        existing_features_file = os.path.join(saved_data_dir, "features_latest.json")
+
+        if os.path.exists(existing_features_file):
+            print("\n" + "="*80)
+            print("WARNING: Existing features found!")
+            print("="*80)
+            print(f"Found existing features at: {existing_features_file}")
+
+            # Load and display info about existing features
+            try:
+                with open(existing_features_file, 'r') as f:
+                    existing_features = json.load(f)
+                print(f"Number of existing features: {len(existing_features)}")
+            except Exception as e:
+                print(f"Could not read existing features: {e}")
+
+            print("\nYou have set PROPOSE_NEW_FEATURES = True, which will:")
+            print("  1. Propose completely new features from scratch")
+            print("  2. Overwrite the existing features_latest.json file")
+            print("\nDo you want to continue and propose new features?")
+            response = input("Type 'yes' to continue or 'no' to use existing features: ").strip().lower()
+
+            if response != 'yes':
+                print("\nFeature proposal cancelled. Loading existing features instead...")
+                print("="*80 + "\n")
+                raw_features = load_features_from_file()
+                print(f"Loaded {len(raw_features)} features")
+            else:
+                print("\nProceeding with new feature proposal...")
+                print("="*80 + "\n")
+                print("Proposing new features from clinical notes...")
+                raw_features = propose_features(
+                    llm_with_tools,
+                    NOTES_DESCRIPTION,
+                    OUTCOME_DESCRIPTION,
+                    STRUCTURED_FEATURES_DESCRIPTION,
+                    MAX_NOTE_INDEX
+                )
+                save_features(raw_features, run_dir=run_dir)
+                print(f"Saved {len(raw_features)} proposed features")
+        else:
+            # No existing features, proceed with proposal
+            print("Proposing new features from clinical notes...")
+            raw_features = propose_features(
+                llm_with_tools,
+                NOTES_DESCRIPTION,
+                OUTCOME_DESCRIPTION,
+                STRUCTURED_FEATURES_DESCRIPTION,
+                MAX_NOTE_INDEX
+            )
+            save_features(raw_features, run_dir=run_dir)
+            print(f"Saved {len(raw_features)} proposed features")
 
         # Log raw features to main log if detailed logging is enabled
         if DETAILED_LOGGING:
@@ -385,9 +430,6 @@ def main(provider: str = "claude", run_dir: str = None):
     print(f"All chunks completed successfully!")
     print(f"{'='*50}")
 
-    # Clean up checkpoint files after successful completion
-    cleanup_checkpoints(CHECKPOINT_DIR, completed_chunks, len(row_chunks))
-
     # ============================================================================
     # Step 4: Merge features from chunks
     # ============================================================================
@@ -408,6 +450,9 @@ def main(provider: str = "claude", run_dir: str = None):
 
     # Save the current features
     save_features(current_features, run_dir=run_dir)
+
+    # Clean up checkpoint files after merged features are saved
+    cleanup_checkpoints(CHECKPOINT_DIR, completed_chunks, len(row_chunks))
 
     # Log final features to main log if detailed logging is enabled
     if DETAILED_LOGGING:

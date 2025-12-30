@@ -8,7 +8,9 @@ import os
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from typing import Dict, List, Tuple
+import pickle
+from typing import Dict, List, Tuple, Optional
+from sklearn.metrics import roc_curve, auc
 from core.log_utils import print
 
 
@@ -426,11 +428,12 @@ def save_comprehensive_results(
     for feature_name, results in results_dict.items():
         if 'feature_importance' in results and results['feature_importance'] is not None:
             importance_df = results['feature_importance'].copy()
-            importance_df.insert(0, 'feature_set', feature_name)
-            importance_path = os.path.join(output_dir, f"{model_name}_{feature_name}_importance.csv")
+            # Create safe filename from feature set name
+            safe_name = feature_name.replace(' ', '_').replace('+', '').replace('/', '_')
+            importance_path = os.path.join(output_dir, f"{model_name}_{safe_name}_feature_importance.csv")
             importance_df.to_csv(importance_path, index=False)
             if not importance_saved:
-                print(f"  Saved feature importances to: {output_dir}/{model_name}_*_importance.csv")
+                print(f"  Saved feature importances to: {output_dir}/{model_name}_*_feature_importance.csv")
                 importance_saved = True
 
 
@@ -519,3 +522,376 @@ def save_permutation_results(
     plt.savefig(plot_path, dpi=300, bbox_inches='tight')
     plt.close()
     print(f"  ✓ Saved null distribution plots: {plot_path}")
+
+
+def save_roc_data(
+    iteration_predictions: Dict,
+    output_path: str
+):
+    """
+    Save raw predictions to CSV for ROC plot regeneration.
+
+    Args:
+        iteration_predictions: Nested dict with predictions per iteration and fold
+            Format: {iteration_key: {fold_idx: {'y_true': array, 'y_pred': array, 'test_idx': array}}}
+        output_path: Path to save CSV file
+
+    Saves CSV with columns: iteration, fold, sample_idx, y_true, y_pred
+    """
+    rows = []
+
+    for iter_key, fold_preds in iteration_predictions.items():
+        # Extract iteration number from key (e.g., 'iteration_0' -> 0)
+        iter_num = int(iter_key.split('_')[1])
+
+        for fold_idx, fold_data in fold_preds.items():
+            y_true = fold_data['y_true']
+            y_pred = fold_data['y_pred']
+            test_idx = fold_data.get('test_idx', np.arange(len(y_true)))
+
+            for i, (sample_idx, true_val, pred_val) in enumerate(zip(test_idx, y_true, y_pred)):
+                rows.append({
+                    'iteration': iter_num,
+                    'fold': fold_idx,
+                    'sample_idx': int(sample_idx),
+                    'y_true': int(true_val),
+                    'y_pred': float(pred_val)
+                })
+
+    df = pd.DataFrame(rows)
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    df.to_csv(output_path, index=False)
+    print(f"Raw predictions saved to: {output_path}")
+    print(f"  Total predictions: {len(df)}")
+    print(f"  Iterations: {df['iteration'].nunique()}, Folds: {df['fold'].nunique()}")
+    print(f"  Samples: {df['sample_idx'].nunique()}")
+
+
+def plot_pooled_roc_curve(
+    iteration_predictions: Dict,
+    title: str = None,
+    color: str = '#2E86AB',
+    output_path: str = None,
+    figsize: Tuple[int, int] = (8, 8),
+    dpi: int = 300
+):
+    """
+    Plot pooled ROC curve (all predictions concatenated into one curve).
+
+    Args:
+        iteration_predictions: Dictionary from results['iteration_predictions']
+                              Format: {iteration_X: {fold_Y: {y_true, y_pred, test_idx}}}
+        title: Plot title
+        color: Line color
+        output_path: Path to save plot (optional)
+        figsize: Figure size
+        dpi: DPI for saved figure
+
+    Returns:
+        fig, ax, roc_data: Figure, axes, and ROC curve data dict
+    """
+    # Collect ALL predictions from all iterations and folds
+    all_y_true = []
+    all_y_pred = []
+
+    for iter_key, fold_dict in iteration_predictions.items():
+        for fold_key, fold_data in fold_dict.items():
+            all_y_true.extend(fold_data['y_true'])
+            all_y_pred.extend(fold_data['y_pred'])
+
+    # Compute single ROC curve from pooled data
+    fpr, tpr, thresholds = roc_curve(all_y_true, all_y_pred)
+    roc_auc = auc(fpr, tpr)
+
+    # Create plot
+    fig, ax = plt.subplots(figsize=figsize)
+
+    # Plot ROC curve
+    ax.plot(fpr, tpr, linewidth=2, color=color,
+            label=f'ROC curve (AUC = {roc_auc:.3f})')
+
+    # Plot diagonal (chance)
+    ax.plot([0, 1], [0, 1], 'k--', linewidth=1, label='Chance (AUC = 0.500)')
+
+    # Formatting
+    ax.set_xlabel('False Positive Rate', fontsize=12, fontweight='bold')
+    ax.set_ylabel('True Positive Rate', fontsize=12, fontweight='bold')
+    ax.set_title(title or 'Pooled ROC Curve', fontsize=14, fontweight='bold')
+    ax.legend(loc='lower right', fontsize=11, framealpha=0.95)
+    ax.grid(True, alpha=0.3, linestyle='--')
+    ax.set_xlim([-0.02, 1.02])
+    ax.set_ylim([-0.02, 1.02])
+    ax.set_aspect('equal')
+
+    plt.tight_layout()
+
+    # Save if requested
+    if output_path:
+        fig.savefig(output_path, dpi=dpi, bbox_inches='tight')
+        print(f"  ✓ Saved pooled ROC curve: {output_path}")
+
+    # Return data for regeneration
+    roc_data = {
+        'fpr': fpr,
+        'tpr': tpr,
+        'auc': roc_auc,
+        'n_samples': len(all_y_true)
+    }
+
+    return fig, ax, roc_data
+
+
+def plot_mean_roc_curve(
+    iteration_predictions: Dict,
+    title: str = None,
+    color: str = '#2E86AB',
+    output_path: str = None,
+    figsize: Tuple[int, int] = (8, 8),
+    dpi: int = 300,
+    show_individual: bool = False,
+    individual_alpha: float = 0.1
+):
+    """
+    Plot mean ROC curve with confidence bands (averaged across iterations).
+
+    Args:
+        iteration_predictions: Dictionary from results['iteration_predictions']
+        title: Plot title
+        color: Line color
+        output_path: Path to save plot (optional)
+        figsize: Figure size
+        dpi: DPI for saved figure
+        show_individual: If True, plot individual iteration ROCs (faded)
+        individual_alpha: Alpha for individual curves
+
+    Returns:
+        fig, ax, roc_data: Figure, axes, and ROC curve data dict
+    """
+    # Compute ROC for each iteration (pooling folds within iteration)
+    tprs = []
+    aucs = []
+    mean_fpr = np.linspace(0, 1, 100)
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    for iter_key, fold_dict in iteration_predictions.items():
+        # Pool predictions within this iteration
+        iter_y_true = []
+        iter_y_pred = []
+        for fold_data in fold_dict.values():
+            iter_y_true.extend(fold_data['y_true'])
+            iter_y_pred.extend(fold_data['y_pred'])
+
+        # Compute ROC for this iteration
+        fpr, tpr, _ = roc_curve(iter_y_true, iter_y_pred)
+
+        # Interpolate to fixed FPR values
+        interp_tpr = np.interp(mean_fpr, fpr, tpr)
+        interp_tpr[0] = 0.0
+        tprs.append(interp_tpr)
+
+        # Calculate AUC
+        roc_auc = auc(fpr, tpr)
+        aucs.append(roc_auc)
+
+        # Plot individual curve if requested
+        if show_individual:
+            ax.plot(fpr, tpr, alpha=individual_alpha, color=color, linewidth=1)
+
+    # Calculate mean and std
+    mean_tpr = np.mean(tprs, axis=0)
+    mean_tpr[-1] = 1.0
+    std_tpr = np.std(tprs, axis=0)
+
+    mean_auc = np.mean(aucs)
+    std_auc = np.std(aucs)
+
+    # Plot mean ROC
+    ax.plot(mean_fpr, mean_tpr, linewidth=2, color=color,
+            label=f'Mean ROC (AUC = {mean_auc:.3f} ± {std_auc:.3f})')
+
+    # Add confidence band (mean ± 1 std)
+    tprs_upper = np.minimum(mean_tpr + std_tpr, 1)
+    tprs_lower = np.maximum(mean_tpr - std_tpr, 0)
+    ax.fill_between(mean_fpr, tprs_lower, tprs_upper,
+                     alpha=0.2, color=color, label='± 1 std. dev.')
+
+    # Plot diagonal (chance)
+    ax.plot([0, 1], [0, 1], 'k--', linewidth=1, label='Chance (AUC = 0.500)')
+
+    # Formatting
+    ax.set_xlabel('False Positive Rate', fontsize=12, fontweight='bold')
+    ax.set_ylabel('True Positive Rate', fontsize=12, fontweight='bold')
+    ax.set_title(title or 'Mean ROC Curve with Confidence Bands', fontsize=14, fontweight='bold')
+    ax.legend(loc='lower right', fontsize=11, framealpha=0.95)
+    ax.grid(True, alpha=0.3, linestyle='--')
+    ax.set_xlim([-0.02, 1.02])
+    ax.set_ylim([-0.02, 1.02])
+    ax.set_aspect('equal')
+
+    plt.tight_layout()
+
+    # Save if requested
+    if output_path:
+        fig.savefig(output_path, dpi=dpi, bbox_inches='tight')
+        print(f"  ✓ Saved mean ROC curve: {output_path}")
+
+    # Return data for regeneration
+    roc_data = {
+        'mean_fpr': mean_fpr,
+        'mean_tpr': mean_tpr,
+        'std_tpr': std_tpr,
+        'mean_auc': mean_auc,
+        'std_auc': std_auc,
+        'aucs': aucs,
+        'n_iterations': len(iteration_predictions)
+    }
+
+    return fig, ax, roc_data
+
+
+def plot_roc_curves_comparison(
+    results_dict: Dict[str, Dict],
+    output_dir: str,
+    plot_type: str = 'both',
+    feature_set_name: str = None,
+    model_name: str = None,
+    colors: Dict[str, str] = None,
+    dpi: int = 300
+):
+    """
+    Plot ROC curves for multiple models or feature sets.
+
+    Args:
+        results_dict: Dict mapping names to results containing 'iteration_predictions'
+        output_dir: Directory to save plots
+        plot_type: 'pooled', 'mean', or 'both'
+        feature_set_name: Name for the feature set (for filenames)
+        model_name: Name for the model (for filenames)
+        colors: Dict mapping names to colors (auto-generated if None)
+        dpi: DPI for saved figures
+
+    Returns:
+        Dict with 'pooled' and/or 'mean' keys containing ROC data
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Auto-generate colors if not provided
+    if colors is None:
+        default_colors = ['#2E86AB', '#A23B72', '#F18F01', '#C73E1D', '#6A994E',
+                          '#8B4789', '#D4B483', '#457B9D', '#E63946', '#06A77D']
+        colors = {name: default_colors[i % len(default_colors)]
+                  for i, name in enumerate(results_dict.keys())}
+
+    all_roc_data = {}
+
+    # Generate pooled ROC if requested
+    if plot_type in ['pooled', 'both']:
+        print(f"  Generating pooled ROC curves...")
+
+        for name, results in results_dict.items():
+            if 'iteration_predictions' not in results:
+                print(f"    Warning: No iteration_predictions for {name}")
+                continue
+
+            color = colors.get(name, '#2E86AB')
+            title = f'{model_name} - {name} (Pooled)' if model_name else f'{name} (Pooled)'
+
+            safe_name = name.replace(' ', '_').replace('+', '').replace('/', '_')
+            filename = f"{model_name}_{safe_name}_roc_pooled.png" if model_name else f"{safe_name}_roc_pooled.png"
+            output_path = os.path.join(output_dir, filename)
+
+            fig, ax, roc_data = plot_pooled_roc_curve(
+                iteration_predictions=results['iteration_predictions'],
+                title=title,
+                color=color,
+                output_path=output_path,
+                dpi=dpi
+            )
+            plt.close(fig)
+
+            if 'pooled' not in all_roc_data:
+                all_roc_data['pooled'] = {}
+            all_roc_data['pooled'][name] = roc_data
+
+    # Generate mean ROC if requested
+    if plot_type in ['mean', 'both']:
+        print(f"  Generating mean ROC curves...")
+
+        for name, results in results_dict.items():
+            if 'iteration_predictions' not in results:
+                continue
+
+            color = colors.get(name, '#2E86AB')
+            title = f'{model_name} - {name} (Mean ± Std)' if model_name else f'{name} (Mean ± Std)'
+
+            safe_name = name.replace(' ', '_').replace('+', '').replace('/', '_')
+            filename = f"{model_name}_{safe_name}_roc_mean.png" if model_name else f"{safe_name}_roc_mean.png"
+            output_path = os.path.join(output_dir, filename)
+
+            fig, ax, roc_data = plot_mean_roc_curve(
+                iteration_predictions=results['iteration_predictions'],
+                title=title,
+                color=color,
+                output_path=output_path,
+                dpi=dpi
+            )
+            plt.close(fig)
+
+            if 'mean' not in all_roc_data:
+                all_roc_data['mean'] = {}
+            all_roc_data['mean'][name] = roc_data
+
+    return all_roc_data
+
+
+def plot_roc_curves_combined(
+    results_dict: Dict[str, Dict[str, any]],
+    output_dir: str,
+    model_name: str,
+    figsize: Tuple[int, int] = (8, 8),
+    dpi: int = 300
+):
+    """
+    Generate and save both pooled and mean ROC plots for all feature sets.
+
+    This is a convenience function that:
+    1. Saves raw predictions to CSV for regeneration
+    2. Generates pooled and mean ROC plots for each feature set
+
+    Args:
+        results_dict: Dictionary mapping feature set names to results
+        output_dir: Directory to save plots and data
+        model_name: Name of the model (for filenames)
+        figsize: Figure size
+        dpi: DPI for saved figures
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    print(f"\nGenerating ROC curves for {model_name}...")
+
+    # Save raw predictions for each feature set
+    for feature_name, results in results_dict.items():
+        if 'iteration_predictions' not in results:
+            print(f"  Warning: No iteration_predictions for {feature_name}, skipping")
+            continue
+
+        # Create safe filename
+        safe_name = feature_name.replace(' ', '_').replace('+', '').replace('/', '_')
+        pred_path = os.path.join(output_dir, f"{model_name}_{safe_name}_predictions.csv")
+
+        save_roc_data(
+            iteration_predictions=results['iteration_predictions'],
+            output_path=pred_path
+        )
+
+    # Generate ROC plots for all feature sets
+    plot_roc_curves_comparison(
+        results_dict=results_dict,
+        output_dir=output_dir,
+        plot_type='both',
+        model_name=model_name,
+        dpi=dpi
+    )
+
+    print(f"  ✓ ROC curves generated for {model_name}")

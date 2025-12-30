@@ -51,7 +51,7 @@ from config.SNOW_config import (
     PARALLEL_THREAD_DELAY
 )
 
-# Checkpoint directory (overridden by pipeline to run-specific directory)
+# Checkpoint directory (overridden by workflow to run-specific directory)
 CHECKPOINT_DIR = "checkpoints"
 
 # ============================================================================
@@ -78,7 +78,7 @@ def main(provider: str = "claude", run_dir: str = None):
         print(f"Checkpoint directory (shared): {checkpoint_dir}")
         print(f"Log file: {log_file}")
     else:
-        # Pipeline provided run_dir
+        # Workflow provided run_dir
         from config.SNOW_config import MAIN_RUNS_DIR
         checkpoint_dir = os.path.join(MAIN_RUNS_DIR, "checkpoints")
         detailed_log_dir = os.path.join(run_dir, "detailed_logs")

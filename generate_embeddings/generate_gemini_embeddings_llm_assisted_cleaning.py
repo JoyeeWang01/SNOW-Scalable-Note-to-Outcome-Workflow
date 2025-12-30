@@ -30,6 +30,42 @@ from config.SNOW_config import NOTES_FILE_PATH, NOTES_COL
 from config.api_gemini import PROJECT_ID, LOCATION
 
 
+def preprocess_clinical_text(text: str) -> str:
+    """
+    Preprocess clinical text for LLM embedding models.
+
+    For neural embedding models like Gemini, we apply minimal preprocessing:
+    - Clean formatting issues (extra whitespace, special characters)
+    - Preserve medical terminology, numbers, and clinical context
+    - Keep natural language structure for better contextual embeddings
+
+    Args:
+        text: Raw clinical note text
+
+    Returns:
+        Preprocessed text suitable for LLM embeddings
+    """
+    # Convert to string and strip
+    text = str(text).strip()
+
+    # Remove URLs (not clinically relevant)
+    text = re.sub(r'http\S+|www\S+|https\S+', '', text)
+
+    # Remove email addresses
+    text = re.sub(r'\S+@\S+', '', text)
+
+    # Normalize excessive whitespace (including newlines, tabs)
+    text = re.sub(r'\s+', ' ', text)
+
+    # Remove excessive punctuation (e.g., "!!!" -> "!")
+    text = re.sub(r'([.!?])\1+', r'\1', text)
+
+    # Final cleanup
+    text = text.strip()
+
+    return text
+
+
 def initialize_vertex_ai():
     """
     Initialize Vertex AI with configured project and location.
@@ -162,7 +198,11 @@ def main():
     data = pd.read_csv(NOTES_FILE_PATH)
     print(f"Loaded {len(data)} records")
 
-    texts = data[NOTES_COL].tolist()
+    # Extract and preprocess texts
+    print("\nPreprocessing clinical texts...")
+    raw_texts = data[NOTES_COL].tolist()
+    texts = [preprocess_clinical_text(text) for text in raw_texts]
+    print(f"Preprocessed {len(texts)} texts")
 
     # Generate embeddings with checkpointing
     checkpoint_file = "data/embeddings/gemini_embeddings_checkpoint.csv"
@@ -201,14 +241,14 @@ def main():
         print(f"SVD reduced shape: {embeddings_svd.shape}")
 
         # Save SVD embeddings
-        svd_output_file = os.path.join(output_dir, "gemini_embeddings.csv")
+        svd_output_file = os.path.join(output_dir, "gemini_embeddings_llm_cleaned.csv")
         pd.DataFrame(embeddings_svd).to_csv(svd_output_file, index=False, header=False)
         print(f"SVD embeddings saved to: {svd_output_file}")
         print(f"SVD file shape: {embeddings_svd.shape} (rows x columns)")
     else:
         print(f"\nSkipping SVD (dimensions {n_dims} <= samples {n_rows})")
 
-        output_file = os.path.join(output_dir, "gemini_embeddings.csv")
+        output_file = os.path.join(output_dir, "gemini_embeddings_llm_cleaned.csv")
         embeddings_df.to_csv(output_file, index=False, header=False)
         print(f"\nEmbeddings saved to: {output_file}")
         print(f"File shape: {embeddings_df.shape} (rows x columns)")

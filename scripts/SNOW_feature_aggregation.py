@@ -40,7 +40,7 @@ def main(provider: str = "claude", run_dir: str = None):
         print(f"Run directory: {run_dir}")
         print(f"Log file: {log_file}")
     else:
-        # Pipeline provided run_dir
+        # Workflow provided run_dir
         from config.SNOW_config import MAIN_RUNS_DIR
         checkpoint_dir = os.path.join(MAIN_RUNS_DIR, "checkpoints")
         detailed_log_dir = os.path.join(run_dir, "detailed_logs")

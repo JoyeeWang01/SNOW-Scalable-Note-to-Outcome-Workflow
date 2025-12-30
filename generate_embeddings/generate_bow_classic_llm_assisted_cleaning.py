@@ -28,38 +28,85 @@ from sklearn import feature_extraction
 
 from config.SNOW_config import NOTES_FILE_PATH, NOTES_COL
 
-'''
-Preprocess a string.
-:parameter
-    :param text: string - name of column containing text
-    :param lst_stopwords: list - list of stopwords to remove
-    :param flg_stemm: bool - whether stemming is to be applied
-    :param flg_lemm: bool - whether lemmitisation is to be applied
-:return
-    cleaned text
-'''
+
+def get_clinical_stopwords():
+    """
+    Get stopwords for clinical text, excluding clinically important words.
+
+    Returns:
+        Set of stopwords safe to remove from clinical notes
+    """
+    # Start with standard English stopwords
+    base_stopwords = set(nltk.corpus.stopwords.words("english"))
+
+    # Clinical terms that should NOT be removed (even if in standard stopwords)
+    clinical_keep_words = {
+        'no', 'not', 'nor', 'without', 'against',  # Negations
+        'positive', 'negative',  # Test results
+        'above', 'below', 'over', 'under',  # Measurements/comparisons
+        'few', 'more', 'most', 'all', 'any',  # Quantifiers
+        'same', 'other', 'both', 'each',  # Clinical comparisons
+    }
+
+    # Remove clinical terms from stopwords
+    clinical_stopwords = base_stopwords - clinical_keep_words
+
+    return clinical_stopwords
+
+
 def utils_preprocess_text(text, flg_stemm=False, flg_lemm=True, lst_stopwords=None):
-    ## clean (convert to lowercase and remove punctuations and characters and then strip)
-    text = re.sub(r'[^\w\s]', '', str(text).lower().strip())
-            
-    ## Tokenize (convert from string to list)
+    """
+    Preprocess clinical text with domain-specific handling.
+
+    Args:
+        text: string - text to preprocess
+        flg_stemm: bool - whether stemming is to be applied
+        flg_lemm: bool - whether lemmatization is to be applied
+        lst_stopwords: list - list of stopwords to remove
+
+    Returns:
+        Cleaned text
+    """
+    # Convert to string and lowercase
+    text = str(text).lower().strip()
+
+    # Remove URLs
+    text = re.sub(r'http\S+|www\S+|https\S+', '', text)
+
+    # Remove email addresses
+    text = re.sub(r'\S+@\S+', '', text)
+
+    # Normalize measurement units (preserve numbers + units together)
+    # e.g., "3.5cm" -> "3.5 cm", "10mg" -> "10 mg"
+    text = re.sub(r'(\d+\.?\d*)([a-z]{1,3})\b', r'\1 \2', text)
+
+    # Remove punctuation but keep alphanumeric (preserves T2, N0, M0, etc.)
+    text = re.sub(r'[^\w\s]', ' ', text)
+
+    # Remove extra whitespace
+    text = re.sub(r'\s+', ' ', text).strip()
+
+    # Tokenize (convert from string to list)
     lst_text = text.split()
-    ## remove Stopwords
+
+    # Keep all tokens including short ones (medical abbreviations like T2, ER, PR)
+    # No length filtering for clinical text
+
+    # Remove stopwords (using clinical-specific list)
     if lst_stopwords is not None:
-        lst_text = [word for word in lst_text if word not in 
-                    lst_stopwords]
-                
-    ## Stemming (remove -ing, -ly, ...)
-    if flg_stemm == True:
+        lst_text = [word for word in lst_text if word not in lst_stopwords]
+
+    # Stemming (remove -ing, -ly, ...)
+    if flg_stemm:
         ps = nltk.stem.porter.PorterStemmer()
         lst_text = [ps.stem(word) for word in lst_text]
-                
-    ## Lemmatisation (convert the word into root word)
-    if flg_lemm == True:
+
+    # Lemmatisation (convert the word into root word)
+    if flg_lemm:
         lem = nltk.stem.wordnet.WordNetLemmatizer()
         lst_text = [lem.lemmatize(word) for word in lst_text]
-            
-    ## back to string from list
+
+    # Back to string from list
     text = " ".join(lst_text)
     return text
 
@@ -79,9 +126,9 @@ def main():
         print(f"Warning: Could not download NLTK resources: {e}")
 
     # Load clinical stopwords
-    print("Loading stopwords...")
-    lst_stopwords = nltk.corpus.stopwords.words("english")
-    print(f"Loaded {len(lst_stopwords)} stopwords")
+    print("Loading clinical-specific stopwords...")
+    lst_stopwords = get_clinical_stopwords()
+    print(f"Loaded {len(lst_stopwords)} stopwords (excluding clinically important terms)")
 
     # Load data
     print(f"\nLoading data from: {NOTES_FILE_PATH}")
@@ -96,10 +143,11 @@ def main():
     print("\nPreprocessing text...")
     dtf["text_clean"] = dtf["text"].apply(
         lambda x: utils_preprocess_text(
-            x, 
-            flg_stemm=False, 
-            flg_lemm=True, 
-            lst_stopwords=lst_stopwords)
+            x,
+            flg_stemm=False,
+            flg_lemm=True,
+            lst_stopwords=lst_stopwords
+        )
     )
     print("Text preprocessing complete")
 
@@ -131,7 +179,7 @@ def main():
     output_dir = "data/embeddings"
     os.makedirs(output_dir, exist_ok=True)
 
-    output_file = os.path.join(output_dir, "bow_classic.csv")
+    output_file = os.path.join(output_dir, "bow_classic_llm_cleaned.csv")
 
     pd.DataFrame(embeddings).to_csv(output_file, index=False, header=False)
     print(f"\nEmbeddings saved to: {output_file}")

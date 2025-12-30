@@ -1,14 +1,14 @@
 # Example Data Files
 
-This directory contains **synthetic example data** to demonstrate the expected format for the clinical feature extraction pipeline. These are NOT real patient data.
+This directory contains **synthetic example data** to demonstrate the expected format for the clinical feature extraction workflow. These are NOT real patient data.
 
 The framework is **domain-agnostic** and works with any type of clinical text (discharge summaries, pathology reports, progress notes, etc.).
 
 ## Purpose
 
-These example files show the structure and format expected by the pipeline scripts, allowing you to:
+These example files show the structure and format expected by the workflow scripts, allowing you to:
 - Understand the required columns and data types
-- Test the pipeline code without access to real clinical data
+- Test the workflow code without access to real clinical data
 - Develop and debug new features safely
 
 ## Files
@@ -22,9 +22,9 @@ Example clinical notes (discharge summaries).
 
 **Use case:** Demonstrates the expected format for any clinical text (discharge summaries, pathology reports, progress notes, etc.)
 
-**Note:** Your clinical notes file can have different column names and ID types. Just update `config/pipeline_config.py` accordingly:
+**Note:** Your clinical notes file can have different column names and ID types. Just update `config/SNOW_config.py` accordingly:
 - Set `NOTES_COL` to your text column name
-- Set `INDEX_COL` to your ID column name
+- Set `ID_COL` to your ID column name
 
 ---
 
@@ -53,10 +53,10 @@ Example structured clinical features and outcomes.
 
 ## Using Example Data
 
-To test the pipeline with example data, modify the config file paths:
+To test the workflow with example data, modify the config file paths:
 
 ```python
-# In config/pipeline_config.py
+# In config/SNOW_config.py
 NOTES_FILE_PATH = os.path.join(_DATA_DIR, 'examples', 'discharge_notes.csv')
 ```
 

@@ -1,0 +1,11 @@
+hadm_id,reason_for_admission,diabetes_management,surgical_intervention,surgical_intervention_type,complications_during_stay,pt_ot_needs,discharge_disposition,discharge_oxygen_requirement,discharge_medications_diuretics,discharge_medications_ace_inhibitors,discharge_medications_statins,discharge_medications_anticoagulants,discharge_medications_antiplatelets,discharge_medications_insulin,discharge_medications_oral_hypoglycemics,discharge_medications_antibiotics,discharge_medications_steroids,discharge_medications_opioids,discharge_medications_bronchodilators,total_discharge_medication_count,follow_up_timeframe_days,diabetes_or_hyperglycemia_indicator,heart_failure_present
+12345,1,2.0,0,0,0,0.0,1,0,1,1,0,0,0,0,1,0,0,0,0,3,14.0,1,1
+67890,1,0.0,1,1,0,0.0,1,0,0,0,0,0,1,0,0,0,0,0,0,2,7.0,0,0
+11111,3,,1,3,0,0.0,1,0,0,0,0,0,0,0,0,0,0,0,0,1,14.0,0,0
+23456,6,4.0,0,0,0,0.0,1,0,0,0,0,0,0,1,1,0,0,0,0,2,,1,0
+34567,2,0.0,0,0,0,0.0,1,1,0,0,0,0,0,0,0,0,1,0,1,2,7.0,0,0
+45678,7,0.0,1,4,0,1.0,3,0,0,0,0,1,0,0,0,0,0,1,0,2,14.0,0,0
+56789,3,0.0,1,3,1,0.0,1,0,0,0,0,0,0,0,0,1,0,0,0,1,7.0,0,0
+78901,5,0.0,0,0,0,0.0,1,0,0,0,0,0,0,0,0,1,0,0,0,1,14.0,0,0
+89012,4,0.0,0,0,0,1.0,4,0,0,1,1,0,1,0,0,0,0,0,0,4,28.0,0,0
+90123,8,0.0,1,3,0,0.0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,7.0,0,0

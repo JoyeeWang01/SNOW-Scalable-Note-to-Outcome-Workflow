@@ -153,62 +153,112 @@ The cohort selection follows a **3-step process**:
 **File:** `03_structured_features.sql`
 
 **What it does:**
-Gathers baseline structured features for each patient admission:
+Extracts comprehensive structured baseline features for each patient admission with intelligent data fusion across multiple sources (ED, ICU, OMR) and quality filters.
 
-**Demographics:**
-- Age at admission
-- Gender (binary: 0=Female, 1=Male)
+**Total Features:** 38 structured features + 2 outcomes + 2 identifiers = 42 columns
 
-**Outcomes:**
-- `death_30_days` - 30-day mortality after discharge
-- `death_1_year` - 1-year mortality after discharge
+#### Feature Categories:
 
-**Vital Signs:**
-- Heart rate, systolic BP, oxygen saturation, temperature (mean/min/max)
-- BMI (from OMR or ICU measurements)
-- Priority: ED vitals → ED triage → ICU first-day vitals
+**1. OUTCOMES (2 features)**
+- `death_30_days` - Binary indicator for death within 30 days post-discharge
+- `death_1_year` - Binary indicator for death within 1 year post-discharge
 
-**Laboratory Values** (averaged over entire admission):
-- `bicarbonate`, `creatinine`, `hemoglobin`, `inr`
-- `platelet_count`, `potassium`, `wbc_count`, `sodium`
-- `ntprobnp` (NT-proBNP), `troponin` (Troponin T)
+**2. DEMOGRAPHICS (2 features)**
+- `age_admission` - Age at admission in years
+- `gender` - Binary (1=Male, 0=Female)
 
-**Comorbidities** (Charlson comorbidity index components):
-- 15 binary indicators (0/1) for conditions like:
-  - Acute MI, peripheral vascular disease, cerebrovascular disease
-  - Dementia, COPD, rheumatoid disease, peptic ulcer disease
-  - Diabetes (with/without complications), liver disease
-  - Renal disease, cancer, etc.
+**3. VITAL SIGNS (5 features)** - Prioritized fusion: ED aggregated → ED triage → ICU first-day
+- `temperature` - Body temperature in Celsius (auto-converts F to C when >45°)
+- `heart_rate` - Heart rate in beats per minute (range: 20-250)
+- `oxygen_saturation` - SpO2 percentage (range: 50-100%)
+- `systolic_bp` - Systolic blood pressure in mmHg (range: 50-260)
+- `bmi` - Body mass index in kg/m² (Prioritized: OMR → ICU, range: 10-80)
 
-**Cardiovascular Diagnoses:**
-- `HT` - Hypertension
-- `CAD` - Coronary artery disease
-- `PH` - Pulmonary hypertension
-- `AF` - Atrial fibrillation
+**4. LABORATORY VALUES (10 features)** - Derived tables prioritized over raw labevents
+- `bicarbonate` - Bicarbonate in mEq/L (AVG)
+- `creatinine` - Creatinine in mg/dL (AVG)
+- `hemoglobin` - Hemoglobin in g/dL (AVG)
+- `inr` - International Normalized Ratio (AVG)
+- `platelet_count` - Platelet count in K/uL (AVG)
+- `potassium` - Potassium in mEq/L (AVG)
+- `wbc_count` - White blood cell count in K/uL (AVG)
+- `sodium` - Sodium in mEq/L (AVG)
+- `ntprobnp` - NT-proBNP in pg/mL (MAX - peak value)
+- `troponin` - Troponin T (MAX - peak value)
+
+**5. COMORBIDITIES (15 features)** - Binary indicators from Charlson comorbidity index
+- `acute_myocardial_infarction`
+- `peripheral_vascular_disease`
+- `cerebrovascular_disease`
+- `dementia`
+- `chronic_obstructive_pulmonary_disease`
+- `rheumatoid_disease`
+- `peptic_ulcer_disease`
+- `mild_liver_disease`
+- `diabetes`
+- `diabetes_complications`
+- `hemiplegia_paraplegia`
+- `renal_disease`
+- `cancer`
+- `moderate_severe_liver_disease`
+- `metastatic_cancer`
+
+**6. DIAGNOSIS FLAGS (4 features)** - ICD-9/10 based binary indicators
+- `HT` - Hypertension (ICD-10: I10-I16; ICD-9: 401-405)
+- `CAD` - Coronary artery disease (ICD-10: I25; ICD-9: 414)
+- `PH` - Pulmonary hypertension (ICD-10: I27; ICD-9: 416)
+- `AF` - Atrial fibrillation (ICD-10: I48; ICD-9: 42731, 42732)
+
+#### Data Quality Features:
+- **Plausibility filters** on all vitals and anthropometric values
+- **Temperature auto-conversion** from Fahrenheit to Celsius
+- **Unit conversions** for OMR weight (lbs→kg) and height (inches→cm)
+- **Prioritized data fusion** across ED, ICU, and OMR sources
+- **COALESCE strategy** for labs: derived concept tables preferred over raw labevents
+- **Peak values** (MAX) for cardiac biomarkers (NTproBNP, Troponin)
+- **Average values** (AVG) for all other labs and vitals
 
 **Prerequisites:** Step 2 completed
 
-**Output:** Final feature table (can export to CSV for analysis)
+**Output:** Final feature table with 42 columns
 
 **To run:**
-1. Update line 8 with your table from Step 2:
+1. **Update the cohort table reference** (line ~139 in the SQL file):
    ```sql
-   FROM `your_project.your_dataset.hfpef_with_notes` c
+   FROM `your_project.your_dataset.hfpef_with_notes`
    ```
-2. This query uses a `WITH` clause and doesn't create a table by default
-3. **Option A:** Export results directly to CSV:
-   - Run the query
+
+2. **Choose an execution method:**
+
+   **Option A - Export results directly to CSV:**
+   - Run the query in BigQuery Console
    - Click "Save Results" → "CSV (local file)"
    - Save as `data/structured_features.csv`
 
-4. **Option B:** Save as a BigQuery table (add at the beginning):
-   ```sql
-   CREATE OR REPLACE TABLE `your_project.your_dataset.hfpef_features` AS
-   WITH coh AS (
-     ...
-   ```
+   **Option B - Save as a BigQuery table first:**
+   - Add at the beginning of the SQL file:
+     ```sql
+     CREATE OR REPLACE TABLE `your_project.your_dataset.structured_features` AS
+     ```
+   - Run the query
+   - Then export using `bq` command (see Data Export section below)
 
-**Expected result:** Same number of rows as Step 2, with ~50 feature columns + `discharge_text`
+3. **(Optional) Customize plausibility ranges** if needed:
+   - HR: 20-250 bpm (line ~237)
+   - SBP: 50-260 mmHg (line ~239)
+   - SpO2: 50-100% (line ~241)
+   - Temperature: 32-42°C (line ~243)
+   - BMI: 10-80 kg/m² (line ~379)
+   - Weight: 30-300 kg (line ~259, 380)
+   - Height: 120-220 cm (line ~260, 381)
+
+**Expected result:** Same number of rows as Step 2 (~2,400), with 42 columns total
+
+**Important notes:**
+- Missing values are represented as NULL (no imputation)
+- For patients with multiple ICU/ED stays, only the FIRST stay is used
+- OMR values are selected from ±365 days around admission (closest by date)
+- See the comprehensive header comments in `03_structured_features.sql` for full documentation
 
 ---
 
@@ -253,27 +303,6 @@ gsutil cp gs://your-bucket/structured_features.csv data/structured_features.csv
 This SQL is designed for **MIMIC-IV v3.1**. If using a different version:
 - Update table references (e.g., `mimiciv_3_1_hosp` → `mimiciv_4_0_hosp`)
 - Check for schema changes in MIMIC documentation
-
-### Custom Table Names
-
-The SQL files contain placeholder table names (e.g., `astute-curve-441706-n6.2400_patients.*`). **You MUST update these** to match your Google Cloud project and dataset:
-
-```sql
--- Replace this pattern throughout:
-`astute-curve-441706-n6.2400_patients.TABLE_NAME`
-
--- With your project and dataset:
-`your-gcp-project.your_dataset_name.TABLE_NAME`
-```
-
-### BigQuery Costs
-
-Running these queries on MIMIC-IV processes several GB of data:
-- Step 1: ~5 GB processed (~$0.025)
-- Step 2: ~10 GB processed (~$0.050)
-- Step 3: ~50 GB processed (~$0.250)
-
-**Total estimated cost:** ~$0.33 USD (as of 2024, verify current BigQuery pricing)
 
 ### PHI/PII Considerations
 
@@ -339,7 +368,13 @@ MIMIC-IV is **de-identified** but still contains clinical notes. Ensure you:
 |------|--------|------|---------|-----------|
 | 1. Cohort Selection | HFpEF cohort | ~2,400 | 12 | `subject_id`, `hadm_id`, demographics |
 | 2. Add Notes | Cohort + notes | ~2,400 | 13 | + `discharge_text` |
-| 3. Gather Structured Features | Final dataset | ~2,400 | ~50 | All features + outcome |
+| 3. Structured Features | Final dataset | ~2,400 | 42 | 38 features + 2 outcomes + 2 IDs |
+
+**Note:** Step 3 includes comprehensive data quality features:
+- Intelligent data fusion across ED, ICU, and OMR sources
+- Automatic unit conversions (temperature, weight, height)
+- Plausibility filters on all vital signs and anthropometric measurements
+- Prioritized COALESCE strategy for lab values (derived tables → raw labevents)
 
 ---
 

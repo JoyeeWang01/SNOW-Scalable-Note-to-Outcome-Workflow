@@ -63,14 +63,13 @@ from core.expert_guided_LLM_utils import (
 SELECTED_PROVIDER = "gemini"  # Options: "gemini", "claude", "openai"
 
 
-def extract_regional_features(clinical_note: str, llm_provider: str, model: str) -> Dict[str, Any]:
+def extract_regional_features(clinical_note: str, api_config) -> Dict[str, Any]:
     """
     Extract regional features (36 features) from a clinical note.
 
     Args:
         clinical_note: Raw pathology report text
-        llm_provider: LLM provider name
-        model: Model identifier
+        api_config: API configuration module
 
     Returns:
         Dictionary with regional feature values
@@ -78,11 +77,7 @@ def extract_regional_features(clinical_note: str, llm_provider: str, model: str)
     prompt = create_regional_features_prompt(clinical_note)
 
     try:
-        response = query_llm(
-            prompt=prompt,
-            llm_provider=llm_provider,
-            model=model
-        )
+        response = query_llm(prompt=prompt, api_config=api_config)
 
         # Parse JSON response
         features = parse_json_response(response)
@@ -98,14 +93,13 @@ def extract_regional_features(clinical_note: str, llm_provider: str, model: str)
         return {}
 
 
-def extract_additional_features(clinical_note: str, llm_provider: str, model: str) -> Dict[str, Any]:
+def extract_additional_features(clinical_note: str, api_config) -> Dict[str, Any]:
     """
     Extract additional clinical features (6 features) from a clinical note.
 
     Args:
         clinical_note: Raw pathology report text
-        llm_provider: LLM provider name
-        model: Model identifier
+        api_config: API configuration module
 
     Returns:
         Dictionary with additional feature values
@@ -113,11 +107,7 @@ def extract_additional_features(clinical_note: str, llm_provider: str, model: st
     prompt = create_additional_features_prompt(clinical_note)
 
     try:
-        response = query_llm(
-            prompt=prompt,
-            llm_provider=llm_provider,
-            model=model
-        )
+        response = query_llm(prompt=prompt, api_config=api_config)
 
         # Parse JSON response
         features = parse_json_response(response)
@@ -139,8 +129,7 @@ def extract_additional_features(clinical_note: str, llm_provider: str, model: st
 def extract_all_features(
     df: pd.DataFrame,
     notes_col: str,
-    llm_provider: str,
-    model: str
+    api_config
 ) -> pd.DataFrame:
     """
     Extract all features from all notes in the DataFrame.
@@ -148,14 +137,13 @@ def extract_all_features(
     Args:
         df: DataFrame with clinical notes
         notes_col: Name of column containing notes
-        llm_provider: LLM provider name
-        model: Model identifier
+        api_config: API configuration module
 
     Returns:
         DataFrame with extracted features (37 base features)
     """
     print(f"\nExtracting features from {len(df)} notes...")
-    print(f"Using LLM: {llm_provider} / {model}")
+    print(f"Using LLM: {api_config.llm_provider} / {api_config.model}")
 
     all_features = []
 
@@ -164,10 +152,10 @@ def extract_all_features(
         print(f"\nProcessing note {idx + 1}/{len(df)}...")
 
         # Extract regional features (36 features)
-        regional = extract_regional_features(note, llm_provider, model)
+        regional = extract_regional_features(note, api_config)
 
         # Extract additional features (6 features)
-        additional = extract_additional_features(note, llm_provider, model)
+        additional = extract_additional_features(note, api_config)
 
         # Combine all features
         features = {**regional, **additional}
@@ -196,8 +184,8 @@ def main():
 
     # Load API configuration
     api_config = load_api_config(SELECTED_PROVIDER)
-    llm_provider = api_config['llm_provider']
-    model = api_config['model']
+    llm_provider = api_config.llm_provider
+    model = api_config.model
 
     print(f"LLM Provider: {llm_provider}")
     print(f"Model: {model}")
@@ -214,8 +202,7 @@ def main():
     features_df = extract_all_features(
         df=df,
         notes_col=NOTES_COL,
-        llm_provider=llm_provider,
-        model=model
+        api_config=api_config
     )
 
     # Calculate derived features (30 additional features)
@@ -234,7 +221,7 @@ def main():
         result_df[col] = features_df[col]
 
     # Save results
-    output_dir = "saved_data"
+    output_dir = "data"
     os.makedirs(output_dir, exist_ok=True)
 
     output_file = os.path.join(output_dir, "fixed_schema_features.csv")

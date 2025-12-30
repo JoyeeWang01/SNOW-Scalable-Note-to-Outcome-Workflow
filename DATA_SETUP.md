@@ -1,6 +1,6 @@
 # Data Setup Guide
 
-This guide explains how to set up API credentials and data files to run the SNOW (Scalable-Note-to-Outcome-Workflow) pipeline.
+This guide explains how to set up API credentials and data files to run the SNOW (Scalable-Note-to-Outcome-Workflow) workflow.
 
 ## Table of Contents
 - [Quick Reference](#quick-reference)
@@ -30,7 +30,7 @@ This repository contains code for multi-agent LLM-based clinical feature generat
 
 ⚠️ **IMPORTANT**: No actual patient data or API credentials are included in this repository for security and privacy reasons.
 
-**Before running the pipeline:**
+**Before running the workflow:**
 1. Configure API credentials for ONE LLM provider
 2. Prepare clinical notes data file
 3. Ensure proper de-identification of any patient data
@@ -52,6 +52,7 @@ The data requirements depend on which scripts you want to run:
 - **Structured features file** (e.g., `data/structured_features.csv`)
   - Only needed if you want to exclude already-available features from LLM extraction
   - Example: Demographics, vitals, labs that you already have
+  - **Format requirement**: Should contain only baseline features + optional index column (see evaluation section below for details)
 
 **What you get:** A CSV file with LLM-generated features for each patient
 
@@ -61,8 +62,23 @@ The data requirements depend on which scripts you want to run:
 
 **Required (all of the above plus):**
 - **Structured features file** with baseline features AND outcome column
-  - Must include: Outcome variable (e.g., `death_30_days`, `readmission`)
-  - Must include: Baseline features for comparison (demographics, vitals, labs)
+
+  **⚠️ IMPORTANT - File Format Requirements:**
+  - **MUST include**: Exactly 1 outcome column (e.g., `death_30_days`, `readmission`)
+  - **MUST include**: Baseline features for comparison (demographics, vitals, labs, etc.)
+  - **OPTIONAL**: 1 index/ID column (e.g., `patient_id`, `hadm_id`)
+  - **⚠️ ALL other columns will be treated as baseline features** and included in model evaluation
+  - Do NOT include any extra metadata, timestamps, or non-feature columns unless you want them used as features
+
+  **Example correct structure:**
+  ```
+  patient_id, age, gender, bmi, heart_rate, creatinine, death_30_days
+  1001,       65,  1,      28.5, 85,         1.2,        0
+  1002,       72,  0,      31.2, 92,         1.8,        1
+  ```
+  ✅ Correct: 1 ID column + 5 baseline features + 1 outcome
+
+  ❌ Incorrect: Including columns like `admission_date`, `hospital_name`, `notes_length` will cause them to be used as features
 - **LLM-generated features** (from running `SNOW_extract_validate_loop.py`)
 
 **Optional (for NLP baseline comparison):**
@@ -81,7 +97,7 @@ The data requirements depend on which scripts you want to run:
 | `SNOW_feature_definition.py` | ✅ Required | ⚠️ Optional | ❌ Not needed | ❌ Not needed |
 | `SNOW_extract_validate_loop.py` | ✅ Required | ⚠️ Optional | ❌ Not needed | ❌ Not needed |
 | `SNOW_feature_aggregation.py` | ❌ Not needed | ❌ Not needed | ❌ Not needed | ❌ Not needed |
-| `main.py` (full pipeline) | ✅ Required | ⚠️ Optional | ❌ Not needed | ❌ Not needed |
+| `main.py` (full workflow) | ✅ Required | ⚠️ Optional | ❌ Not needed | ❌ Not needed |
 | `SNOW_evaluation.py` | ✅ Required | ✅ Required | ✅ Required | ⚠️ Optional |
 
 **Legend:**
@@ -102,7 +118,7 @@ The data requirements depend on which scripts you want to run:
 
 1. **Copy template file** for your chosen provider
 2. **Add your credentials** to the file
-3. **Done!** The pipeline will automatically load your config
+3. **Done!** The workflow will automatically load your config
 
 ### Detailed Configuration
 
@@ -202,9 +218,9 @@ The configuration files are automatically loaded by `core/llm_interface.py` base
 
 ### Required Data Files
 
-The pipeline expects specific CSV files in the `data/` directory:
+The workflow expects specific CSV files in the `data/` directory:
 
-#### For MIMIC Heart Failure Pipeline:
+#### For MIMIC Heart Failure Workflow:
 
 1. **`data/discharge_notes.csv`** - Clinical notes with outcomes
    - Required columns:
@@ -427,7 +443,7 @@ nano config/api_claude.py  # Add your API credentials
 # 3. Use example data for testing
 cp data/examples/discharge_notes.csv data/discharge_notes.csv
 
-# 4. Run the pipeline
+# 4. Run the workflow
 python main.py
 ```
 
@@ -435,7 +451,7 @@ python main.py
 
 ### What Just Happened?
 
-The pipeline:
+The workflow:
 1. ✅ Proposed features from your clinical notes
 2. ✅ Aligned features by reviewing actual notes
 3. ✅ Extracted feature values for each patient

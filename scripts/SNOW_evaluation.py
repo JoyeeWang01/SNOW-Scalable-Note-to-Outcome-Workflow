@@ -9,8 +9,10 @@ This script:
 5. Saves detailed results and summary tables
 
 Usage:
-    cd stanford/scripts
-    python SNOW_oncology_evaluation.py
+    cd scripts
+    python SNOW_evaluation.py \
+        --evaluation-config ../config/evaluation_config.py \
+        --snow-config ../config/SNOW_config.py
 """
 
 from __future__ import annotations
@@ -19,8 +21,10 @@ import os
 import sys
 from pathlib import Path
 from datetime import datetime
-from typing import List, Tuple
+from typing import List, Tuple, Dict
 import json
+import argparse
+import importlib.util
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -32,41 +36,6 @@ import numpy as np
 import pandas as pd
 from sklearn.linear_model import LogisticRegression
 
-# Import modular components
-from config.evaluation_config import (
-    STRUCTURED_FILE_PATH,
-    LABEL_COL,
-    INDEX_COL,
-    NOTES_COL,
-    SNOW_FEATURES_PATH,
-    EMBEDDING_FILES,
-    ADDITIONAL_FEATURES,
-    N_ITERATIONS,
-    MASTER_SEED,
-    N_OUTER_FOLDS,
-    N_INNER_FOLDS,
-    INNER_CV_REPEATS,
-    TARGET_DIMS,
-    IMPUTATION_METHOD,
-    MICE_MAX_ITER,
-    SVD_N_COMPONENTS,
-    SVD_MAX_ITER,
-    SVD_TOL,
-    KNN_N_NEIGHBORS,
-    MODELS,
-    FEATURE_SETS,
-    RESULTS_DIR,
-    SAVE_DETAILED_RESULTS,
-    PLOT_FIGSIZE,
-    PLOT_DPI,
-    VERBOSITY,
-    ENABLE_PERMUTATION_TESTS,
-    PERMUTATION_TEST_PAIRS,
-    PERMUTATION_TEST_MODELS,
-    PERMUTATION_N_PERMUTATIONS,
-    PERMUTATION_SEED
-)
-
 from core.data_loader import load_all_features, combine_feature_sets
 from core.evaluation import run_multiple_evaluations
 from core.nlp_evaluation import run_multiple_evaluations_nlp, run_multiple_evaluations_rfg
@@ -76,9 +45,156 @@ from core.visualization import (
     save_results_table,
     save_detailed_results as save_detailed_csv,
     save_comprehensive_results,
-    save_permutation_results
+    save_permutation_results,
+    save_roc_data,
+    plot_pooled_roc_curve,
+    plot_mean_roc_curve,
+    plot_roc_curves_comparison
 )
 from core.permutation_test import run_permutation_test_pipeline
+
+# Default config paths (can be overridden via CLI)
+DEFAULT_EVALUATION_CONFIG = Path(__file__).parent.parent / "config" / "evaluation_config.py"
+DEFAULT_SNOW_CONFIG = Path(__file__).parent.parent / "config" / "SNOW_config.py"
+
+
+def load_module_from_path(module_name: str, file_path: Path):
+    """Dynamically load a module from a given file path."""
+    spec = importlib.util.spec_from_file_location(module_name, file_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Unable to load module {module_name} from {file_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def apply_evaluation_config(config_module):
+    """Populate module globals from the provided evaluation config module."""
+    required_attrs = [
+        "STRUCTURED_FILE_PATH",
+        "LABEL_COL",
+        "INDEX_COL",
+        "NOTES_COL",
+        "SNOW_FEATURES_PATH",
+        "EMBEDDING_FILES",
+        "ADDITIONAL_FEATURES",
+        "N_ITERATIONS",
+        "MASTER_SEED",
+        "N_OUTER_FOLDS",
+        "N_INNER_FOLDS",
+        "INNER_CV_REPEATS",
+        "INNER_CV_SCORING",
+        "TARGET_DIMS",
+        "IMPUTATION_METHOD",
+        "MICE_MAX_ITER",
+        "MICE_ESTIMATOR",
+        "MICE_N_NEAREST_FEATURES",
+        "MICE_SKIP_COMPLETE",
+        "SVD_N_COMPONENTS",
+        "SVD_MAX_ITER",
+        "SVD_TOL",
+        "KNN_N_NEIGHBORS",
+        "MODELS",
+        "FEATURE_SETS",
+        "RESULTS_DIR",
+        "SAVE_DETAILED_RESULTS",
+        "PLOT_FIGSIZE",
+        "PLOT_DPI",
+        "VERBOSITY",
+        "ENABLE_PERMUTATION_TESTS",
+        "PERMUTATION_TEST_PAIRS",
+        "PERMUTATION_TEST_MODELS",
+        "PERMUTATION_N_PERMUTATIONS",
+        "PERMUTATION_SEED",
+        "RUN_MODEL_SELECTION",
+        "MODELS_FOR_SELECTION",
+        "METRICS",
+    ]
+
+    missing = [name for name in required_attrs if not hasattr(config_module, name)]
+    if missing:
+        raise AttributeError(f"Evaluation config missing required fields: {', '.join(missing)}")
+
+    for name in required_attrs:
+        globals()[name] = getattr(config_module, name)
+
+
+def resolve_scoring_metric(metric: str) -> str:
+    """Map config metric names to sklearn scoring strings."""
+    mapping = {
+        'auc': 'roc_auc',
+        'roc_auc': 'roc_auc',
+        'aupr': 'average_precision',
+        'average_precision': 'average_precision',
+        'f1': 'f1',
+        'accuracy': 'accuracy'
+    }
+    return mapping.get(metric.lower(), metric)
+
+
+SUPPORTED_METRICS = {'auc', 'accuracy', 'aupr', 'f1'}
+
+
+def normalize_metrics(metrics):
+    """Normalize metrics from config and drop unsupported entries."""
+    normalized = []
+    unsupported = []
+    seen = set()
+
+    for metric in metrics:
+        metric_key = metric.lower()
+        if metric_key in SUPPORTED_METRICS:
+            if metric_key not in seen:
+                normalized.append(metric_key)
+                seen.add(metric_key)
+        else:
+            unsupported.append(metric)
+
+    if unsupported:
+        print(f"⚠️  Ignoring unsupported metrics in METRICS: {unsupported}")
+
+    if not normalized:
+        normalized = ['auc']
+        print("⚠️  No supported metrics specified in METRICS. Defaulting to ['auc'].")
+
+    return normalized
+
+
+def print_metric_summary(results: dict, metrics: List[str]):
+    """Print mean ± std for requested metrics if available."""
+    for metric in metrics:
+        mean_key = f"mean_{metric}"
+        std_key = f"std_{metric}"
+        if mean_key in results and std_key in results:
+            print(f"  Mean {metric.upper()}: {results[mean_key]:.4f} ± {results[std_key]:.4f}")
+        else:
+            print(f"  ⚠️  {metric} not available in results")
+
+
+def metric_available(feature_results: Dict[str, dict], metric: str) -> bool:
+    """Check whether any feature set results contain the requested metric."""
+    return any(f"mean_{metric}" in res for res in feature_results.values())
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Run SNOW evaluation with configurable config files.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        "--evaluation-config",
+        type=str,
+        default=str(DEFAULT_EVALUATION_CONFIG),
+        help="Path to evaluation_config.py to load.",
+    )
+    parser.add_argument(
+        "--snow-config",
+        type=str,
+        default=str(DEFAULT_SNOW_CONFIG),
+        help="Path to SNOW_config.py to load before evaluation config.",
+    )
+    return parser.parse_args()
 
 def get_model_instance(model_config: dict, random_state: int = None, model_name: str = None):
     """
@@ -134,7 +250,7 @@ def is_nlp_feature_set(sources: List[str]) -> Tuple[bool, str]:
         Tuple of (is_nlp, embedding_name) where is_nlp is True if feature set
         contains baseline + exactly one NLP embedding
     """
-    nlp_embeddings = ['bow_classic', 'bow_tfidf', 'gemini']
+    nlp_embeddings = list(EMBEDDING_FILES.keys())
 
     # Count NLP embeddings in sources
     nlp_sources = [s for s in sources if s in nlp_embeddings]
@@ -167,10 +283,21 @@ def is_rfg_feature_set(sources: List[str]) -> bool:
 
 def main():
     """Main evaluation function."""
-    print("="*80)
-    print("SNOW ONCOLOGY FEATURE EVALUATION")
-    print("="*80)
-    print(f"Start time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+    args = parse_args()
+    eval_config_path = Path(args.evaluation_config).expanduser().resolve()
+    snow_config_path = Path(args.snow_config).expanduser().resolve()
+
+    if not eval_config_path.exists():
+        raise FileNotFoundError(f"Evaluation config not found: {eval_config_path}")
+    if not snow_config_path.exists():
+        raise FileNotFoundError(f"SNOW config not found: {snow_config_path}")
+
+    # Load SNOW config first so evaluation config imports the desired values
+    load_module_from_path("config.SNOW_config", snow_config_path)
+    eval_config_module = load_module_from_path("config.evaluation_config", eval_config_path)
+    apply_evaluation_config(eval_config_module)
+    inner_cv_scoring = resolve_scoring_metric(INNER_CV_SCORING)
+    evaluation_metrics = normalize_metrics(METRICS)
 
     # Create results directory
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -181,6 +308,19 @@ def main():
     setup_logging("evaluation", log_dir=run_results_dir)
     print(f"Results directory: {run_results_dir}\n")
     print(f"Log file saved to: {run_results_dir}\n")
+
+    # Import model selection evaluation if enabled
+    if RUN_MODEL_SELECTION:
+        from core.model_selection_evaluation import run_multiple_evaluations_model_selection
+
+    print("="*80)
+    print("SNOW ONCOLOGY FEATURE EVALUATION")
+    print("="*80)
+    print(f"Start time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+    print(f"Using evaluation config: {eval_config_path}")
+    print(f"Using SNOW config: {snow_config_path}\n")
+    print(f"Metrics requested: {evaluation_metrics}\n")
+    print(f"Inner CV scoring: {INNER_CV_SCORING} -> {inner_cv_scoring}\n")
 
     # ========================================================================
     # Load Data
@@ -242,7 +382,12 @@ def main():
     # ========================================================================
     imputation_params = {}
     if IMPUTATION_METHOD == 'mice':
-        imputation_params = {'max_iter': MICE_MAX_ITER}
+        imputation_params = {
+            'max_iter': MICE_MAX_ITER,
+            'estimator': MICE_ESTIMATOR,
+            'n_nearest_features': MICE_N_NEAREST_FEATURES,
+            'skip_complete': MICE_SKIP_COMPLETE
+        }
     elif IMPUTATION_METHOD == 'svd':
         imputation_params = {
             'n_components': SVD_N_COMPONENTS,
@@ -251,15 +396,171 @@ def main():
         }
     elif IMPUTATION_METHOD == 'knn':
         imputation_params = {'n_neighbors': KNN_N_NEIGHBORS}
+    elif IMPUTATION_METHOD in ('mean', 'median'):
+        imputation_params = {}
+    else:
+        raise ValueError(
+            "Unknown IMPUTATION_METHOD. Use one of: mean, median, mice, svd, knn"
+        )
 
     # ========================================================================
     # Evaluate Each Model (or Run Model Selection)
     # ========================================================================
     all_model_results = {}
+    results_table_metrics = list(dict.fromkeys(
+        evaluation_metrics + ['tp', 'fp', 'fn', 'tp_pct', 'fp_pct', 'fn_pct']
+    ))
 
-    # Evaluate each model separately
-    total_models = len(MODELS)
-    for model_idx, (model_name, model_config) in enumerate(MODELS.items(), 1):
+    # Check if model selection mode is enabled
+    if RUN_MODEL_SELECTION:
+        print("\n" + "="*80)
+        print("MODEL SELECTION MODE ENABLED")
+        print("="*80)
+        print("Will select best model type + hyperparameters in inner CV")
+        print(f"Candidate models: {list(MODELS_FOR_SELECTION.keys())}")
+        print("="*80 + "\n")
+
+        # Use a single "ModelSelection" entry to store results
+        model_name = "ModelSelection"
+        model_feature_results = {}
+
+        # Evaluate each feature set with model selection
+        for feature_set_name, feature_set_config in dynamic_feature_sets.items():
+            print(f"\n{'='*80}")
+            print(f"Feature Set: {feature_set_name}")
+            print(f"Description: {feature_set_config['description']}")
+            print(f"{'='*80}")
+
+            # Check if this is an NLP or RFG feature set
+            is_nlp, embedding_name = is_nlp_feature_set(feature_set_config['sources'])
+            is_rfg = is_rfg_feature_set(feature_set_config['sources'])
+
+            if is_rfg:
+                print(f"⚠️  Skipping {feature_set_name}: Model selection not yet supported for RFG feature sets")
+                continue
+
+            if is_nlp:
+                # Use NLP evaluation with model selection + dimensionality selection
+                print(f"Using NLP evaluation with MODEL SELECTION + dimensionality selection for {embedding_name}")
+
+                # Get embedding DataFrame
+                embedding_df = all_data.get(embedding_name)
+                if embedding_df is None:
+                    print(f"⚠️  Skipping {feature_set_name}: {embedding_name} not available")
+                    continue
+
+                # Get baseline features
+                baseline_df = all_data['structured']
+
+                # Import the function
+                from core.nlp_evaluation import run_multiple_evaluations_nlp_model_selection
+
+                # Run NLP evaluation with model selection
+                results = run_multiple_evaluations_nlp_model_selection(
+                    embedding_df=embedding_df,
+                    embedding_name=embedding_name,
+                    baseline_df=baseline_df,
+                    y=pd.Series(y, index=baseline_df.index),
+                    models_config=MODELS_FOR_SELECTION,
+                    n_iterations=N_ITERATIONS,
+                    master_seed=MASTER_SEED,
+                    n_outer=N_OUTER_FOLDS,
+                    n_inner=N_INNER_FOLDS,
+                    n_inner_repeats=INNER_CV_REPEATS,
+                    target_dims=TARGET_DIMS,
+                    imputation_method=IMPUTATION_METHOD,
+                    imputation_params=imputation_params,
+                    verbosity=VERBOSITY,
+                    collect_predictions=True,
+                    scoring=inner_cv_scoring,
+                    metrics=evaluation_metrics
+                )
+
+                # Store results
+                model_feature_results[feature_set_name] = results
+
+                # Print summary
+                print(f"\n{'='*60}")
+                print(f"Results for {feature_set_name}:")
+                print_metric_summary(results, evaluation_metrics)
+                print(f"  Model Selection:")
+                for model, count in results['model_selection_counts'].items():
+                    total_folds = N_ITERATIONS * N_OUTER_FOLDS
+                    print(f"    {model}: {count}/{total_folds} ({100*count/total_folds:.1f}%)")
+                print(f"  Dimensionality Selection (top 3):")
+                for variant, count in results['variant_selection_counts'].most_common(3):
+                    total_folds = N_ITERATIONS * N_OUTER_FOLDS
+                    print(f"    {variant}: {count}/{total_folds} ({100*count/total_folds:.1f}%)")
+                print(f"{'='*60}\n")
+
+                continue
+
+            # Standard feature combination
+            additional_dfs = {name: all_data[name] for name in ADDITIONAL_FEATURES.keys() if name in all_data}
+            embeddings_dfs = {name: all_data[name] for name in EMBEDDING_FILES.keys() if name in all_data}
+
+            try:
+                X_combined = combine_feature_sets(
+                    sources=feature_set_config['sources'],
+                    structured_df=all_data['structured'],
+                    snow_df=all_data.get('snow'),
+                    embeddings_dfs=embeddings_dfs,
+                    additional_dfs=additional_dfs
+                )
+            except (ValueError, KeyError) as e:
+                print(f"⚠️  Skipping {feature_set_name}: {e}")
+                continue
+
+            print(f"Combined feature matrix: {X_combined.shape}")
+
+            # Ensure all columns are numeric before converting to numpy
+            non_numeric_cols = X_combined.select_dtypes(exclude=[np.number]).columns.tolist()
+            if non_numeric_cols:
+                print(f"⚠️  WARNING: Found non-numeric columns that should have been removed: {non_numeric_cols}")
+                print(f"    Removing these columns to proceed...")
+                X_combined = X_combined.select_dtypes(include=[np.number])
+                print(f"    New shape after removing non-numeric columns: {X_combined.shape}")
+
+            # Convert to numpy
+            X = X_combined.values
+
+            # Run model selection evaluation
+            results = run_multiple_evaluations_model_selection(
+                X=X,
+                y=y,
+                models_config=MODELS_FOR_SELECTION,
+                n_iterations=N_ITERATIONS,
+                n_outer=N_OUTER_FOLDS,
+                n_inner=N_INNER_FOLDS,
+                n_inner_repeats=INNER_CV_REPEATS,
+                imputation_method=IMPUTATION_METHOD,
+                master_seed=MASTER_SEED,
+                imputation_params=imputation_params,
+                verbosity=VERBOSITY,
+                collect_predictions=True,
+                scoring=inner_cv_scoring
+            )
+
+            # Store results
+            model_feature_results[feature_set_name] = results
+
+            # Print summary
+            print(f"\n{'='*60}")
+            print(f"Results for {feature_set_name}:")
+            print_metric_summary(results, evaluation_metrics)
+            print(f"  Model Selection:")
+            for model, count in results['model_selection_counts'].items():
+                total_folds = N_ITERATIONS * N_OUTER_FOLDS
+                print(f"    {model}: {count}/{total_folds} ({100*count/total_folds:.1f}%)")
+            print(f"{'='*60}\n")
+
+        # Store results under "ModelSelection" key
+        all_model_results[model_name] = model_feature_results
+
+    else:
+        # Standard mode: evaluate each model separately
+        total_models = len(MODELS)
+        for model_idx, (model_name, model_config) in enumerate(MODELS.items(), 1):
             print("\n" + "="*80)
             print(f"EVALUATING MODEL {model_idx}/{total_models}: {model_name}")
             print("="*80)
@@ -318,7 +619,9 @@ def main():
                         imputation_method=IMPUTATION_METHOD,
                         imputation_params=imputation_params,
                         verbosity=VERBOSITY,
-                        collect_predictions=ENABLE_PERMUTATION_TESTS  # Collect predictions for permutation tests
+                        collect_predictions=True,
+                        scoring=inner_cv_scoring,
+                        metrics=evaluation_metrics
                     )
 
                 elif is_nlp:
@@ -355,7 +658,9 @@ def main():
                         imputation_method=IMPUTATION_METHOD,
                         imputation_params=imputation_params,
                         verbosity=VERBOSITY,
-                        collect_predictions=ENABLE_PERMUTATION_TESTS  # Collect predictions for permutation tests
+                        collect_predictions=True,
+                        scoring=inner_cv_scoring,
+                        metrics=evaluation_metrics
                     )
 
                 else:
@@ -415,7 +720,9 @@ def main():
                         imputation_params=imputation_params,
                         verbosity=VERBOSITY,
                         feature_names=feature_names,
-                        collect_predictions=ENABLE_PERMUTATION_TESTS  # Collect predictions for permutation tests
+                        collect_predictions=True,
+                        scoring=inner_cv_scoring,
+                        metrics=evaluation_metrics
                     )
 
                 # Store results
@@ -435,7 +742,7 @@ def main():
             save_results_table(
                 results_dict=model_feature_results,
                 output_path=os.path.join(model_results_dir, f"{model_name}_summary.csv"),
-                metrics=['auc', 'accuracy']
+                metrics=results_table_metrics
             )
 
             # Save comprehensive results for reproducibility (always enabled)
@@ -446,6 +753,23 @@ def main():
                 model_name=model_name
             )
 
+            # Save detailed results with predictions as pickle files
+            print(f"\nSaving detailed results with predictions for {model_name}...")
+            import pickle
+            for feature_set_name, results in model_feature_results.items():
+                # Create safe filename
+                safe_name = feature_set_name.replace(' ', '_').replace('+', '').replace('/', '_')
+                pickle_path = os.path.join(model_results_dir, f"{model_name}_{safe_name}_detailed_results.pkl")
+
+                with open(pickle_path, 'wb') as f:
+                    pickle.dump(results, f)
+
+                # Check if predictions were saved
+                if 'iteration_predictions' in results and len(results['iteration_predictions']) > 0:
+                    print(f"  ✓ Saved {feature_set_name} with predictions to: {pickle_path}")
+                else:
+                    print(f"  ⚠ Saved {feature_set_name} WITHOUT predictions to: {pickle_path}")
+
             # Save detailed results if enabled (legacy format)
             if SAVE_DETAILED_RESULTS:
                 save_detailed_csv(
@@ -453,17 +777,17 @@ def main():
                     output_path=os.path.join(model_results_dir, f"{model_name}_detailed.csv")
                 )
 
-            # Save feature importance for all feature sets (models with feature_importances_ or coef_)
-            print(f"\nSaving feature importance for {model_name}...")
+            # Save selection frequency for all feature sets (logistic regression only)
+            print(f"\nSaving selection frequency for {model_name}...")
             for feature_set_name, results in model_feature_results.items():
-                if 'feature_importance' in results:
-                    importance_df = results['feature_importance']
+                if 'selection_frequency' in results:
+                    selection_freq_df = results['selection_frequency']
                     # Create safe filename from feature set name
                     safe_name = feature_set_name.replace(' ', '_').replace('+', '').replace('/', '_')
-                    importance_path = os.path.join(model_results_dir, f"{model_name}_{safe_name}_feature_importance.csv")
-                    importance_df.to_csv(importance_path, index=False)
-                    print(f"  ✓ Saved {feature_set_name}: {importance_path}")
-                    print(f"    Top 5 features: {', '.join(importance_df.head(5)['feature'].tolist())}")
+                    selection_freq_path = os.path.join(model_results_dir, f"{model_name}_{safe_name}_selection_frequency.csv")
+                    selection_freq_df.to_csv(selection_freq_path, index=False)
+                    print(f"  ✓ Saved {feature_set_name}: {selection_freq_path}")
+                    print(f"    Top 5 features by selection frequency: {', '.join(selection_freq_df.head(5)['feature'].tolist())}")
 
             print(f"\n✓ Completed evaluation for model {model_idx}/{total_models}: {model_name}")
 
@@ -477,25 +801,81 @@ def main():
     for model_name in all_model_results.keys():
         model_results_dir = os.path.join(run_results_dir, model_name)
 
-        # Generate plots for AUC
-        print(f"\nGenerating AUC plots for {model_name}...")
-        plot_model_comparison(
-            model_results={model_name: all_model_results[model_name]},
-            metric='auc',
-            figsize=PLOT_FIGSIZE,
-            output_dir=model_results_dir,
-            dpi=PLOT_DPI
-        )
+        for metric in evaluation_metrics:
+            if not metric_available(all_model_results[model_name], metric):
+                print(f"\n⊘ Skipping {metric.upper()} plots for {model_name}: metric not available in results")
+                continue
 
-        # Generate plots for Accuracy
-        print(f"Generating Accuracy plots for {model_name}...")
-        plot_model_comparison(
-            model_results={model_name: all_model_results[model_name]},
-            metric='accuracy',
-            figsize=PLOT_FIGSIZE,
-            output_dir=model_results_dir,
-            dpi=PLOT_DPI
-        )
+            print(f"\nGenerating {metric.upper()} plots for {model_name}...")
+            plot_model_comparison(
+                model_results={model_name: all_model_results[model_name]},
+                metric=metric,
+                figsize=PLOT_FIGSIZE,
+                output_dir=model_results_dir,
+                dpi=PLOT_DPI
+            )
+
+    # ========================================================================
+    # Generate ROC Curves
+    # ========================================================================
+    print("\n" + "="*80)
+    print("GENERATING ROC CURVES")
+    print("="*80)
+
+    for model_name in all_model_results.keys():
+        model_results_dir = os.path.join(run_results_dir, model_name)
+        roc_curves_dir = os.path.join(model_results_dir, "roc_curves")
+        os.makedirs(roc_curves_dir, exist_ok=True)
+
+        print(f"\nGenerating ROC curves for {model_name}...")
+
+        # Collect all feature sets with prediction data for comparison plots
+        results_dict = {}
+
+        for feature_set_name, results in all_model_results[model_name].items():
+            # Check if iteration_predictions are available
+            if 'iteration_predictions' not in results or len(results['iteration_predictions']) == 0:
+                print(f"  ⊘ Skipping {feature_set_name}: No prediction data available")
+                continue
+
+            # Add to results_dict for comparison plots
+            results_dict[feature_set_name] = results
+
+            print(f"  Saving raw data for {feature_set_name}...")
+
+            iter_preds = results['iteration_predictions']
+
+            # Create safe filename from feature set name
+            safe_name = feature_set_name.replace(' ', '_').replace('+', '').replace('/', '_')
+
+            try:
+                # Save raw prediction data for regeneration
+                data_path = os.path.join(roc_curves_dir, f"roc_data_{model_name}_{safe_name}.csv")
+                save_roc_data(iter_preds, data_path)
+                print(f"    ✓ Saved raw data")
+
+            except Exception as e:
+                print(f"    ✗ Error saving data for {feature_set_name}: {e}")
+
+        # Generate comparison plots with all feature sets
+        if len(results_dict) > 0:
+            print(f"\n  Generating comparison plots with {len(results_dict)} feature sets...")
+
+            try:
+                # Use plot_roc_curves_comparison to generate all 3 types
+                plot_roc_curves_comparison(
+                    results_dict=results_dict,
+                    output_dir=roc_curves_dir,
+                    plot_type='both',  # Generates both pooled and mean
+                    model_name=model_name,
+                    dpi=PLOT_DPI
+                )
+                print(f"    ✓ ROC plots generated for {len(results_dict)} feature sets")
+
+            except Exception as e:
+                print(f"    ✗ Error generating comparison plots: {e}")
+
+        print(f"\n✓ ROC curves saved to: {roc_curves_dir}")
 
     # ========================================================================
     # Permutation Tests (if enabled)
@@ -645,6 +1025,7 @@ def main():
         'master_seed': MASTER_SEED,
         'n_outer_folds': N_OUTER_FOLDS,
         'n_inner_folds': N_INNER_FOLDS,
+        'inner_cv_scoring': INNER_CV_SCORING,
         'imputation_method': IMPUTATION_METHOD,
         'models': list(MODELS.keys()),
         'feature_sets': list(dynamic_feature_sets.keys()),
@@ -653,7 +1034,10 @@ def main():
             'snow': SNOW_FEATURES_PATH if os.path.exists(SNOW_FEATURES_PATH) else None,
             'embeddings': EMBEDDING_FILES,
             'additional': ADDITIONAL_FEATURES
-        }
+        },
+        'evaluation_config_path': str(eval_config_path),
+        'snow_config_path': str(snow_config_path),
+        'metrics': evaluation_metrics
     }
 
     with open(os.path.join(run_results_dir, 'config.json'), 'w') as f:
@@ -671,12 +1055,16 @@ def main():
     print(f"Feature sets evaluated: {len(FEATURE_SETS)}")
     print(f"Iterations per evaluation: {N_ITERATIONS}")
     print("\nGenerated files per model:")
-    print("  - <model>_summary.csv: Mean ± std for each feature set")
+    print("  - <model>_summary.csv: Mean ± std for each feature set (metrics: "
+          f"{', '.join(results_table_metrics)})")
     print("  - <model>_detailed.csv: All scores per iteration")
-    print("  - <model>_auc_boxplot.png: AUC comparison box plot")
-    print("  - <model>_auc_barplot.png: AUC comparison bar plot")
-    print("  - <model>_accuracy_boxplot.png: Accuracy comparison box plot")
-    print("  - <model>_accuracy_barplot.png: Accuracy comparison bar plot")
+    print("  - <model>_<feature_set>_detailed_results.pkl: Full results with predictions (for ROC curves)")
+    print("  - <model>_<metric>_boxplot.png: Comparison box plot for each metric in METRICS")
+    print("  - <model>_<metric>_barplot.png: Comparison bar plot for each metric in METRICS")
+    print("  - roc_curves/: ROC curve plots and raw prediction data")
+    print("    - <model>_<feature_set>_roc_pooled.png: Pooled ROC curve per feature set")
+    print("    - <model>_<feature_set>_roc_mean.png: Mean ROC curve per feature set")
+    print("    - roc_data_*.csv: Raw prediction data for each feature set")
     print("="*80)
 
 

@@ -4,8 +4,8 @@ Prompt templates for multi-agent oncology feature extraction and validation.
 
 FEATURE_PROPOSAL_TEMPLATE = (
 """You are a clinical machine learning scientist developing a prognosis model.
-The clinical notes you will receive are: {notes_description}
-Your prediction target is: {outcome_description}
+The clinical notes you will receive are: {notes_description}.
+Your prediction target is: {outcome_description}.
 
 Identify the most clinically relevant structured features—either categorical or numerical—commonly found in such reports.
 You have access to each clinical note (indexed 0 to {MAX_NOTE_INDEX}) via the get_note tool. You are expected to identify patterns, structures, and field repetitions (e.g., per-region or per-sample reporting) by reading and analyzing these notes directly.
@@ -85,8 +85,8 @@ FEATURE_VALIDATION_TEMPLATE = (
 2. remove - if the feature cannot be reliably extracted due to too many absences from the notes.
 3. reextract - if the feature could be consistently extracted but extraction logic needs revision or the values require post-processing (e.g., formatting, grouping, normalization).
 
-The clinical notes you will receive are: {notes_description}
-Your prediction target is: {outcome_description}
+The clinical notes you will receive are: {notes_description}.
+Your prediction target is: {outcome_description}.
 
 The current feature is:
 <feature_detail>
@@ -150,8 +150,8 @@ Return the JSON object between <JSON> and </JSON> tags."""
 FEATURE_ALIGNMENT_TEMPLATE = (
 """You are a clinical machine learning scientist performing **feature validation**.  
 You previously generated a set of candidate features from clinical notes.  
-The clinical notes you will receive are: {notes_description}  
-Your prediction target is: {outcome_description}
+The clinical notes you will receive are: {notes_description}.
+Your prediction target is: {outcome_description}.
 Now, you must carefully review each feature recommendation against 10 of the actual notes given.
 
 Each feature has the following fields:
@@ -240,8 +240,8 @@ Candidate features:
 MERGE_FEATURE_TEMPLATE = (
 """You are a clinical machine learning scientist performing **feature validation**.
 You previously generated {num_chunks} sets of candidate features from reviewing {num_chunks} subsets of clinical notes.
-The clinical notes you received were: {notes_description}
-Your prediction target is: {outcome_description}
+The clinical notes you received were: {notes_description}.
+Your prediction target is: {outcome_description}.
 
 ### Your task:
 1. Take the **union** of the {num_chunks} sets of candidate features and return a **single consolidated set** of features.

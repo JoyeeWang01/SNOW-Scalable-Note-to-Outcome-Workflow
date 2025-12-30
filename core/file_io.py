@@ -17,7 +17,7 @@ def get_saved_data_dir(run_dir=None):
     If run_dir is None (standalone execution), uses current directory.
 
     Args:
-        run_dir: Run directory from pipeline (if provided, extracts MAIN_RUNS_DIR)
+        run_dir: Run directory from workflow (if provided, extracts MAIN_RUNS_DIR)
 
     Returns:
         Path to saved_data directory
@@ -66,7 +66,7 @@ def save_features(features, run_dir=None):
 
     Args:
         features: List of feature dictionaries
-        run_dir: Run directory (optional, for pipeline runs)
+        run_dir: Run directory (optional, for workflow runs)
     """
     saved_data_dir = get_saved_data_dir(run_dir)
 
@@ -123,7 +123,7 @@ def save_df(df, run_dir=None):
 
     Args:
         df: pandas DataFrame to save
-        run_dir: Run directory (optional, for pipeline runs)
+        run_dir: Run directory (optional, for workflow runs)
     """
     saved_data_dir = get_saved_data_dir(run_dir)
 

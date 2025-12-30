@@ -1,6 +1,6 @@
 # Configuration Guide
 
-This guide explains how to customize the SNOW pipeline for your specific use case.
+This guide explains how to customize the SNOW workflow for your specific use case.
 
 ## When Do I Need This?
 
@@ -18,7 +18,7 @@ This guide explains how to customize the SNOW pipeline for your specific use cas
 ## Table of Contents
 - [Overview](#overview)
 - [API Configuration](#api-configuration)
-- [Pipeline Configuration (SNOW_config.py)](#pipeline-configuration-snow_configpy)
+- [Workflow Configuration (SNOW_config.py)](#workflow-configuration-snow_configpy)
 - [Evaluation Configuration (evaluation_config.py)](#evaluation-configuration-evaluation_configpy)
 - [Quick Start Examples](#quick-start-examples)
 - [Troubleshooting](#troubleshooting)
@@ -27,10 +27,10 @@ This guide explains how to customize the SNOW pipeline for your specific use cas
 
 ## Overview
 
-The SNOW pipeline uses three main configuration files:
+The SNOW workflow uses three main configuration files:
 
 1. **API Configuration** (`api_*.py`) - LLM provider credentials
-2. **Pipeline Configuration** (`SNOW_config.py`) - Data paths, processing settings
+2. **Workflow Configuration** (`SNOW_config.py`) - Data paths, processing settings
 3. **Evaluation Configuration** (`evaluation_config.py`) - Model evaluation settings
 
 **Most common changes:**
@@ -131,10 +131,10 @@ gcloud config set project YOUR_PROJECT_ID
 
 ---
 
-## Pipeline Configuration (SNOW_config.py)
+## Workflow Configuration (SNOW_config.py)
 
 ### Purpose
-Configure data paths, processing parameters, and logging settings for the SNOW pipeline.
+Configure data paths, processing parameters, and logging settings for the SNOW workflow.
 
 ### File Location
 `config/SNOW_config.py`
@@ -269,172 +269,205 @@ Configure model evaluation settings, feature sets for comparison, and cross-vali
 
 ### Key Parameters
 
-#### Data Paths
+#### Data Paths and Labels
 
 ```python
-# Input data
-NOTES_FILE_PATH = os.path.join(_DATA_DIR, 'discharge_notes.csv')
-STRUCTURED_FEATURES_FILE = os.path.join(_DATA_DIR, 'structured_features.csv')
-LLM_EXTRACTED_FEATURES_FILE = os.path.join(_DATA_DIR, 'extracted_features_latest.csv')
+# Root dirs
+_CONFIG_DIR = os.path.dirname(os.path.abspath(__file__))
+_ROOT_DIR = os.path.dirname(_CONFIG_DIR)
+_DATA_DIR = os.path.join(_ROOT_DIR, 'data/examples')
 
-# Embedding files (for NLP baselines)
-BOW_CLASSIC_FILE = os.path.join(_DATA_DIR, 'embeddings', 'bow_classic.csv')
-BOW_TFIDF_FILE = os.path.join(_DATA_DIR, 'embeddings', 'bow_tfidf.csv')
-GEMINI_EMBEDDINGS_FILE = os.path.join(_DATA_DIR, 'embeddings', 'gemini_embeddings.csv')
+# Structured features + labels
+STRUCTURED_FILE_PATH = os.path.join(_DATA_DIR, 'structured_features.csv')
+LABEL_COL = 'death_30_days'
+
+# SNOW features (optional)
+SNOW_FEATURES_PATH = os.path.join(_DATA_DIR, 'generated_features.csv')
+
+# Index/notes columns come from SNOW_config.py
+from config.SNOW_config import NOTES_FILE_PATH, INDEX_COL, NOTES_COL
 ```
 
 **How to customize:**
-- Point to your extracted features CSV
-- Point to your embedding files (if using NLP baselines)
+- Point `STRUCTURED_FILE_PATH` and `SNOW_FEATURES_PATH` to your files.
+- Set `LABEL_COL` to your outcome column.
+- Update `INDEX_COL`/`NOTES_COL` in `SNOW_config.py` if needed.
 
-#### Feature Sets
+#### Embeddings and Additional Feature Sets
 
 ```python
-# Define which feature sets to evaluate
+_EMBEDDINGS_DIR = os.path.join(_ROOT_DIR, 'data/embeddings')
+
+EMBEDDING_FILES = {
+    'bow_classic': os.path.join(_EMBEDDINGS_DIR, 'bow_classic.csv'),
+    'bow_tfidf': os.path.join(_EMBEDDINGS_DIR, 'bow_tfidf.csv'),
+    'gemini': os.path.join(_EMBEDDINGS_DIR, 'gemini_embeddings.csv'),
+}
+
+ADDITIONAL_FEATURES = {
+    # 'custom_features': 'path/to/features.csv',
+}
+```
+
+**Notes:**
+- Keys in `EMBEDDING_FILES` must match names used in `FEATURE_SETS`.
+- Only files that exist are loaded; missing files are skipped.
+
+#### Feature Sets (sources-based)
+
+```python
 FEATURE_SETS = {
-    'structured_only': {
-        'name': 'Structured Features Only',
-        'features': STRUCTURED_FEATURE_COLS  # Demographics, vitals, labs
+    'Baseline': {
+        'description': 'Baseline features only',
+        'sources': ['structured']
     },
-    'llm_extracted': {
-        'name': 'LLM-Extracted Features',
-        'features': LLM_FEATURE_COLS  # Features extracted by SNOW
+    'Baseline + SNOW': {
+        'description': 'Baseline + SNOW-extracted features',
+        'sources': ['structured', 'snow']
     },
-    'combined': {
-        'name': 'Structured + LLM',
-        'features': STRUCTURED_FEATURE_COLS + LLM_FEATURE_COLS
+    'Baseline + BoW Classic': {
+        'description': 'Baseline + BoW classic embeddings',
+        'sources': ['structured', 'bow_classic']
     },
-    'bow_classic': {
-        'name': 'Bag-of-Words (Count)',
-        'embedding_file': BOW_CLASSIC_FILE
+    'Baseline + Gemini Embeddings': {
+        'description': 'Baseline + Gemini embeddings',
+        'sources': ['structured', 'gemini']
     },
-    'bow_tfidf': {
-        'name': 'Bag-of-Words (TF-IDF)',
-        'embedding_file': BOW_TFIDF_FILE
-    },
-    'gemini_embeddings': {
-        'name': 'Gemini Embeddings',
-        'embedding_file': GEMINI_EMBEDDINGS_FILE
+    'Baseline + RFG': {
+        'description': 'Baseline + Representative Feature Generation',
+        'sources': ['structured', 'rfg']  # Special marker for multi-embedding selection
     }
 }
 ```
 
-**Customize which models to compare:**
-
-**Minimal comparison (LLM vs. Structured):**
-```python
-FEATURE_SETS = {
-    'structured_only': {...},
-    'llm_extracted': {...},
-    'combined': {...}
-}
-```
-
-**Full comparison (include NLP baselines):**
-```python
-FEATURE_SETS = {
-    'structured_only': {...},
-    'llm_extracted': {...},
-    'combined': {...},
-    'bow_classic': {...},
-    'bow_tfidf': {...},
-    'gemini_embeddings': {...}
-}
-```
+**Sources can include:**
+- `structured` (baseline features)
+- `snow` (SNOW-extracted features)
+- embedding keys from `EMBEDDING_FILES`
+- keys from `ADDITIONAL_FEATURES`
+- `rfg` (special RFG model-selection pipeline)
 
 #### Cross-Validation Settings
 
 ```python
-# Nested cross-validation parameters
-OUTER_CV_FOLDS = 5      # Outer folds for test set evaluation
-INNER_CV_FOLDS = 3      # Inner folds for hyperparameter tuning
-N_ITER = 20             # Number of random search iterations
-RANDOM_STATE = 42       # Random seed for reproducibility
+N_ITERATIONS = 50
+MASTER_SEED = 2048
+N_OUTER_FOLDS = 2
+N_INNER_FOLDS = 2
+INNER_CV_REPEATS = 3
+
+# NLP embedding dimensionality variants
+# Use "ALL" or -1 to include the original embedding
+TARGET_DIMS = [5, "ALL"]
 ```
 
 **Recommendations:**
-- **Quick testing**: `OUTER_CV_FOLDS = 3`, `INNER_CV_FOLDS = 2`, `N_ITER = 10`
-- **Standard evaluation**: `OUTER_CV_FOLDS = 5`, `INNER_CV_FOLDS = 3`, `N_ITER = 20`
-- **Thorough evaluation**: `OUTER_CV_FOLDS = 10`, `INNER_CV_FOLDS = 5`, `N_ITER = 50`
+- **Quick testing**: fewer folds + iterations (e.g., `N_ITERATIONS = 5`)
+- **Thorough evaluation**: more folds + iterations (e.g., `N_ITERATIONS = 50`)
+- For tiny datasets, include `"ALL"` in `TARGET_DIMS` to avoid zero variants.
 
 **What these control:**
-- `OUTER_CV_FOLDS`: More folds = better estimate of generalization but slower
-- `INNER_CV_FOLDS`: Used for hyperparameter tuning
-- `N_ITER`: More iterations = better hyperparameter search but slower
+- `N_OUTER_FOLDS`: Generalization estimate
+- `N_INNER_FOLDS` + `INNER_CV_REPEATS`: Hyperparameter tuning stability
+- `N_ITERATIONS`: Repeat the full nested CV with different seeds
+
+#### Imputation Settings
+
+```python
+IMPUTATION_METHOD = 'median'  # 'mean', 'mice', 'svd', 'knn', 'median'
+
+# MICE
+MICE_MAX_ITER = 5
+MICE_ESTIMATOR = 'linear_regression'
+MICE_N_NEAREST_FEATURES = 20
+MICE_SKIP_COMPLETE = True
+
+# SVD
+SVD_N_COMPONENTS = 3
+SVD_MAX_ITER = 500
+SVD_TOL = 1e-4
+
+# KNN
+KNN_N_NEIGHBORS = 5
+```
 
 #### Model Settings
 
 ```python
-# Machine learning models
 MODELS = {
-    'logistic_regression': LogisticRegression(max_iter=1000, random_state=RANDOM_STATE),
-    'random_forest': RandomForestClassifier(random_state=RANDOM_STATE),
-    'xgboost': XGBClassifier(random_state=RANDOM_STATE, eval_metric='logloss')
-}
-
-# Hyperparameter grids
-PARAM_GRIDS = {
-    'logistic_regression': {
-        'C': [0.001, 0.01, 0.1, 1, 10, 100],
-        'penalty': ['l1', 'l2'],
-        'solver': ['liblinear']
+    'LogisticRegression': {
+        'class': 'sklearn.linear_model.LogisticRegression',
+        'params': {
+            'random_state': None,
+            'max_iter': 3000
+        },
+        'param_grid': {
+            'C': np.logspace(-5, 1, 7),
+            'penalty': ['l1', 'l2'],
+            'solver': ['liblinear', 'saga']
+        }
     },
-    'random_forest': {
-        'n_estimators': [50, 100, 200],
-        'max_depth': [5, 10, 20, None],
-        'min_samples_split': [2, 5, 10]
-    },
-    'xgboost': {
-        'n_estimators': [50, 100, 200],
-        'max_depth': [3, 5, 7],
-        'learning_rate': [0.01, 0.1, 0.3]
+    'KNN': {
+        'class': 'sklearn.neighbors.KNeighborsClassifier',
+        'params': {},
+        'param_grid': {
+            'n_neighbors': [5, 10, 20, 30, 40, 50],
+            'weights': ['uniform', 'distance'],
+            'metric': ['euclidean', 'manhattan']
+        }
     }
 }
 ```
 
-**Customize models:**
-
-**Use only logistic regression (fastest):**
-```python
-MODELS = {
-    'logistic_regression': LogisticRegression(max_iter=1000, random_state=RANDOM_STATE)
-}
-PARAM_GRIDS = {
-    'logistic_regression': {'C': [0.01, 0.1, 1, 10, 100]}
-}
-```
-
-**Add neural network:**
-```python
-from sklearn.neural_network import MLPClassifier
-
-MODELS = {
-    'logistic_regression': LogisticRegression(...),
-    'mlp': MLPClassifier(random_state=RANDOM_STATE)
-}
-PARAM_GRIDS = {
-    'logistic_regression': {...},
-    'mlp': {
-        'hidden_layer_sizes': [(50,), (100,), (50, 50)],
-        'alpha': [0.0001, 0.001, 0.01]
-    }
-}
-```
-
-#### Output Settings
+#### Model Selection (Optional)
 
 ```python
-# Results output
-RESULTS_DIR = os.path.join(_ROOT_DIR, 'evaluation_results')
-SAVE_MODELS = False     # Whether to save trained models
-SAVE_PREDICTIONS = True # Whether to save predictions
+MODELS_FOR_SELECTION = MODELS
+RUN_MODEL_SELECTION = False
 ```
 
-**What gets saved:**
-- `evaluation_results/metrics_summary.csv` - Performance metrics for all models
-- `evaluation_results/nested_cv_results.json` - Detailed CV results
-- `evaluation_results/feature_importance.csv` - Feature importance (if applicable)
-- `evaluation_results/roc_curves.png` - ROC curve comparison plot
+When `RUN_MODEL_SELECTION=True`, the inner CV chooses the best model type
+and hyperparameters across `MODELS_FOR_SELECTION`.
+
+#### Metrics and Scoring
+
+```python
+INNER_CV_SCORING = 'auc'   # 'auc', 'aupr', 'f1', 'accuracy'
+METRICS = ['auc', 'aupr', 'f1']
+```
+
+#### Output and Visualization
+
+```python
+RESULTS_DIR = "evaluation_results"
+SAVE_DETAILED_RESULTS = True
+SAVE_FEATURE_IMPORTANCE = True
+
+PLOT_FIGSIZE = (14, 8)
+PLOT_DPI = 300
+TOP_N_FEATURES = 20
+BOX_PLOT_COLORS = ['lightblue', 'lightgreen', 'lightcoral', 'lightyellow', 'lightpink', 'lightpurple']
+```
+
+**Typical outputs per run:**
+- `evaluation_results/evaluation_<timestamp>/config.json` (config snapshot)
+- `<model>_summary.csv` and `<model>_detailed.csv`
+- `<model>_<feature_set>_detailed_results.pkl` (includes predictions)
+- `roc_curves/` with ROC plots + raw ROC data
+
+#### Permutation Tests and Logging
+
+```python
+ENABLE_PERMUTATION_TESTS = False
+PERMUTATION_TEST_PAIRS = [
+    ('Baseline', 'Baseline + SNOW'),
+]
+PERMUTATION_TEST_MODELS = ['LogisticRegression']
+PERMUTATION_N_PERMUTATIONS = 10000
+PERMUTATION_SEED = 42
+
+VERBOSITY = 1  # 0=silent, 1=progress, 2=detailed
+```
 
 ---
 
@@ -479,7 +512,7 @@ cp config/api_claude.py.template config/api_claude.py
 - For Gemini: Run `gcloud auth application-default login`
 - Check API quotas and billing
 
-### Pipeline Configuration Issues
+### Workflow Configuration Issues
 
 **Problem**: `FileNotFoundError: data/discharge_notes.csv not found`
 
@@ -504,7 +537,7 @@ MAX_WORKERS = 5  # Reduce from 10 to 5
 
 ### Evaluation Configuration Issues
 
-**Problem**: `FileNotFoundError: embeddings/bow_classic.csv not found`
+**Problem**: `FileNotFoundError: data/embeddings/bow_classic.csv not found`
 
 **Solution**: Either generate embeddings or remove from evaluation
 ```python
@@ -524,9 +557,9 @@ FEATURE_SETS = {
 
 **Solution**: Reduce CV folds and iterations
 ```python
-OUTER_CV_FOLDS = 3      # Reduce from 5
-INNER_CV_FOLDS = 2      # Reduce from 3
-N_ITER = 10             # Reduce from 20
+N_OUTER_FOLDS = 3       # Reduce from 5
+N_INNER_FOLDS = 2       # Reduce from 3
+N_ITERATIONS = 10       # Reduce from 20
 ```
 
 **Problem**: Out of memory during evaluation
@@ -555,7 +588,7 @@ FEATURE_SETS = {
 
 ## Additional Resources
 
-- **Data Setup**: See [DATA_SETUP.md](DATA_SETUP.md) for data file requirements
-- **README**: See [README.md](README.md) for overall project documentation
-- **Code Organization**: See [docs/CODE_ORGANIZATION.md](docs/CODE_ORGANIZATION.md) for architecture details
-- **Logging Guide**: See [docs/LOGGING_GUIDE.md](docs/LOGGING_GUIDE.md) for detailed logging configuration
+- **Data Setup**: See [DATA_SETUP.md](../DATA_SETUP.md) for data file requirements
+- **README**: See [README.md](../README.md) for overall project documentation
+- **Code Organization**: See [CODE_ORGANIZATION.md](../docs/CODE_ORGANIZATION.md) for architecture details
+- **Logging Guide**: See [LOGGING_GUIDE.md](../docs/LOGGING_GUIDE.md) for detailed logging configuration

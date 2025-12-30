@@ -8,7 +8,7 @@ from typing import Any, Dict, List
 from langchain_core.output_parsers import JsonOutputParser
 from langchain.schema import OutputParserException
 
-from .utils import extract_json_from_tags
+from .data_utils import extract_json_from_tags
 from config.prompts import FEATURE_PROPOSAL_TEMPLATE, FEATURE_ALIGNMENT_TEMPLATE, MERGE_FEATURE_TEMPLATE, FEATURE_VALIDATION_TEMPLATE, FEATURE_EXTRACTION_TEMPLATE, AGGREGATION_CODE_TEMPLATE
 from core.log_utils import print
 
@@ -335,7 +335,13 @@ def combine_features_status(raw_features, status_features):
             combined_features.append(clean_feature)
 
     # Add truly new features from status_features
-    for status_feature in status_features:
+    for idx, status_feature in enumerate(status_features):
+        # Validate that status_feature has required 'feature_name' key
+        if 'feature_name' not in status_feature:
+            print(f"ERROR: status_feature at index {idx} is missing 'feature_name' key. Feature content: {json.dumps(status_feature, indent=2)}")
+            print("Skipping this malformed feature...")
+            continue
+
         if status_feature.get('status') == 'new' and status_feature['feature_name'] not in raw_features_dict:
             clean_feature = {k: v for k, v in status_feature.items() if k != 'status'}
             combined_features.append(clean_feature)

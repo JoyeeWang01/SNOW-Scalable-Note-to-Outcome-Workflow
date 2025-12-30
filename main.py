@@ -1,7 +1,7 @@
 """
-Complete Pipeline for Oncology Feature Extraction.
+Complete Workflow for Feature Generation.
 
-This script orchestrates the full multi-agent LLM feature extraction pipeline:
+This script orchestrates the full multi-agent LLM feature generation workflow:
 1. Feature Definition: Discover and align features from clinical notes
 2. Extract & Validate: Extract feature values and validate them iteratively
 3. Aggregation: Generate aggregation code and create final dataset
@@ -46,7 +46,7 @@ def setup_logging(run_dir):
     import logging
 
     log_dir = os.path.join(run_dir, "logs")
-    log_filename = os.path.join(log_dir, 'pipeline_log.txt')
+    log_filename = os.path.join(log_dir, 'workflow_log.txt')
 
     # Clear any existing handlers
     for handler in logging.root.handlers[:]:
@@ -63,7 +63,7 @@ def setup_logging(run_dir):
     )
 
     logger = logging.getLogger(__name__)
-    logger.info(f"Starting pipeline - Run directory: {run_dir}")
+    logger.info(f"Starting workflow - Run directory: {run_dir}")
     logger.info(f"Log file: {log_filename}")
     logger.info("=" * 80)
 
@@ -73,12 +73,12 @@ def setup_logging(run_dir):
 
 
 def create_run_summary(run_dir, timestamp, args, status, error=None):
-    """Create a summary file for the pipeline run."""
+    """Create a summary file for the workflow run."""
     summary_file = os.path.join(run_dir, "run_summary.txt")
 
     with open(summary_file, 'w') as f:
         f.write("="*80 + "\n")
-        f.write("PIPELINE RUN SUMMARY\n")
+        f.write("WORKFLOW RUN SUMMARY\n")
         f.write("="*80 + "\n\n")
         f.write(f"Timestamp: {timestamp}\n")
         f.write(f"Provider: {args.provider}\n")
@@ -92,7 +92,7 @@ def create_run_summary(run_dir, timestamp, args, status, error=None):
             f.write("  - Stage 3: Aggregation\n")
 
         f.write(f"\nRun directory: {run_dir}\n")
-        f.write(f"Log file: {os.path.join(run_dir, 'logs', 'pipeline_log.txt')}\n")
+        f.write(f"Log file: {os.path.join(run_dir, 'logs', 'workflow_log.txt')}\n")
         f.write("\n" + "="*80 + "\n")
         f.write(f"Status: {status}\n")
 
@@ -105,23 +105,23 @@ def create_run_summary(run_dir, timestamp, args, status, error=None):
 
 
 def main():
-    """Main pipeline orchestrator."""
+    """Main workflow orchestrator."""
     parser = argparse.ArgumentParser(
-        description='Multi-Agent LLM Feature Extraction Pipeline',
+        description='Multi-Agent LLM Feature Extraction Workflow',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Run complete pipeline
-  python SNOW_oncology_pipeline.py --provider claude
+  # Run complete workflow
+  python main.py --provider claude
 
   # Run only stages 2 and 3
-  python SNOW_oncology_pipeline.py --provider gemini --skip-definition
+  python main.py --provider gemini --skip-definition
 
   # Run only stage 1
-  python SNOW_oncology_pipeline.py --provider claude --only-definition
+  python main.py --provider claude --only-definition
 
   # Force re-run stage 1 even if features exist
-  python SNOW_oncology_pipeline.py --provider openai --force
+  python main.py --provider openai --force
         """
     )
 
@@ -184,7 +184,7 @@ Examples:
     log_filename = setup_logging(run_dir)
 
     print("="*80)
-    print("MULTI-AGENT LLM FEATURE EXTRACTION PIPELINE")
+    print("MULTI-AGENT LLM FEATURE EXTRACTION WORKFLOW")
     print("="*80)
     print(f"Run directory: {run_dir}")
     print(f"Log file: {log_filename}")
@@ -211,7 +211,7 @@ Examples:
             print("="*80)
 
             # Import and run feature definition
-            from SNOW_oncology_feature_definition import main as feature_definition_main
+            from scripts.SNOW_feature_definition import main as feature_definition_main
             feature_definition_main(provider=args.provider, run_dir=run_dir)
 
             print("\n" + "="*80)
@@ -224,7 +224,7 @@ Examples:
             print("="*80)
 
             # Import and run extract/validate
-            from SNOW_oncology_extract_validate_loop import main as extract_validate_main
+            from scripts.SNOW_extract_validate_loop import main as extract_validate_main
             extract_validate_main(provider=args.provider, run_dir=run_dir)
 
             print("\n" + "="*80)
@@ -237,7 +237,7 @@ Examples:
             print("="*80)
 
             # Import and run aggregation
-            from SNOW_oncology_aggregator import main as aggregation_main
+            from scripts.SNOW_feature_aggregation import main as aggregation_main
             aggregation_main(provider=args.provider, run_dir=run_dir)
 
             print("\n" + "="*80)
@@ -245,7 +245,7 @@ Examples:
             print("="*80)
 
         print("\n" + "="*80)
-        print("PIPELINE COMPLETE")
+        print("WORKFLOW COMPLETE")
         print("="*80)
         print(f"\nRun directory: {run_dir}")
         print(f"  - Logs: {os.path.join(run_dir, 'logs')}")
@@ -265,13 +265,13 @@ Examples:
         return 0
 
     except KeyboardInterrupt:
-        print("\n\nPipeline interrupted by user")
+        print("\n\nWorkflow interrupted by user")
         summary_file = create_run_summary(run_dir, timestamp, args, "INTERRUPTED BY USER")
         print(f"\nRun summary saved to: {summary_file}")
         return 130
 
     except Exception as e:
-        print(f"\n\nERROR: Pipeline failed with exception: {e}")
+        print(f"\n\nERROR: Workflow failed with exception: {e}")
         import traceback
         traceback.print_exc()
 

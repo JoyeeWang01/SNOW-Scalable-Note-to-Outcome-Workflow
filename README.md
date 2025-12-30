@@ -1,32 +1,37 @@
-# Multi-Agent LLM Feature Generation for Clinical Notes
+# SNOW: Scaling Clinician-Grade Feature Generation from Clinical Notes with Multi-Agent Language Models
 
-A modular Python framework for proposing, extracting, validating, and aggregating clinical features from unstructured clinical text using multiple LLM providers (Gemini, Claude, OpenAI).
+A modular Python framework for proposing, extracting, validating, and aggregating clinician-grade features from unstructured clinical text using multiple LLM providers (Gemini, Claude, OpenAI).
 
 Applicable to various clinical domains including cardiology, oncology, and other medical specialties.
 
-📄 **Paper:** [Agent-Based Feature Generation from Clinical Notes for Outcome Prediction](https://arxiv.org/abs/2508.01956)
-👥 **Authors:** Jiayi Wang, Jacqueline Jil Vallon, Neil Panjwani, Xi Ling, Sushmita Vij, Sandy Srinivas, John Leppert, Mark K. Buyyounouski, Mohsen Bayati
+📄 **Paper:** [Scaling Clinician-Grade Feature Generation from Clinical Notes with Multi-Agent Language Models](https://arxiv.org/abs/2508.01956)
+👥 **Authors:** Jiayi (Joyee) Wang, Jacqueline Jil Vallon, Nikhil V. Kotha, Neil Panjwani, Xi Ling, Margaret Redfield, Sushmita Vij, Sandy Srinivas, John Leppert, Mark K. Buyyounouski, Mohsen Bayati
 📅 **arXiv:** 2508.01956
 
 ## Overview
 
-This project implements the **SNOW (Scalable-Note-to-Outcome-Workflow)** framework, a multi-agent feature generation system described in "[Agent-Based Feature Generation from Clinical Notes for Outcome Prediction](https://arxiv.org/abs/2508.01956)" (Wang et al., 2025). The system automatically extracts predictive features from unstructured clinical notes using autonomous AI agents with tool-calling capabilities.
+This project implements **SNOW (Scalable Note-to-Outcome Workflow)**, a transparent multi-agent large language model (LLM) system described in "[Scaling Clinician-Grade Feature Generation from Clinical Notes with Multi-Agent Language Models](https://arxiv.org/abs/2508.01956)" (Wang et al., 2025). SNOW is designed to scale a rigorous clinician feature generation (CFG) workflow with optional human oversight, producing interpretable structured features from unstructured clinical notes.
 
 The framework is **domain-agnostic** and has been validated on:
-- **Heart failure** prediction from discharge summaries (MIMIC-IV dataset)
-- **Prostate cancer** outcomes from pathology reports (Stanford dataset)
+- **Prostate cancer** 5-year recurrence prediction from clinical notes (Stanford cohort)
+- **Heart failure with preserved ejection fraction (HFpEF)** mortality prediction from discharge summaries (MIMIC-IV cohort)
 - Other clinical prediction tasks
 
-### Pipeline Architecture
+### Results (from the paper)
 
-The framework provides a 3-step automated pipeline:
+- **Prostate cancer recurrence (N=147):** SNOW (AUC-ROC `0.767 ± 0.041`) matches manual CFG (`0.762 ± 0.026`) and outperforms structured baselines, clinician-guided LLM extraction, and multiple representational feature generation (RFG) baselines.
+- **Efficiency:** once configured, SNOW generates a full patient-level feature table in ~12 hours with ~5 hours clinician oversight (≈48× reduction in expert effort vs manual CFG).
+- **HFpEF external validation (N=2,084):** SNOW outperforms baseline and RFG methods for **30-day mortality** (AUC-ROC `0.851 ± 0.008`) and **1-year mortality** (AUC-ROC `0.763 ± 0.003`), without task-specific tuning.
 
-1. **Proposes** relevant clinical features from notes
-2. **Aligns** the feature list by reviewing actual notes to update, refine, or remove features based on what's available in the dataset
-3. **Extracts** feature values from all patient notes
-4. **Validates** extracted values for accuracy and consistency
+### Workflow Architecture
 
-**Optional:** Aggregation and evaluation scripts are available for further analysis.
+The framework provides a 3-step automated workflow:
+
+1. **Feature Definition** - Proposes relevant clinical features from notes, then aligns the feature list by reviewing actual notes to update, refine, or remove features based on what's available in the dataset
+2. **Feature Extraction & Validation** - Extracts feature values from all patient notes and validates extracted values for accuracy and consistency
+3. **Feature Aggregation** - Aggregates multi-valued features (e.g., max, mean) into single values per patient for downstream modeling
+
+**Optional:** Model evaluation script is available to compare LLM features against NLP baselines.
 
 ## Project Structure
 
@@ -41,6 +46,7 @@ The framework provides a 3-step automated pipeline:
 │   ├── api_gemini.py               # Your credentials (NOT in repo, gitignored)
 │   ├── SNOW_config.py              # Data paths and processing configuration
 │   ├── evaluation_config.py        # Evaluation configuration
+│   ├── paper_configs/              # Configs used for paper experiments
 │   └── prompts.py                  # LLM prompt templates
 │
 ├── core/                # Core modules
@@ -53,10 +59,10 @@ The framework provides a 3-step automated pipeline:
 │   ├── ml_models.py                # Machine learning models
 │   └── ...                         # Additional utilities
 │
-├── scripts/             # Individual pipeline step scripts
-│   ├── SNOW_feature_definition.py       # Feature proposal & alignment
-│   ├── SNOW_extract_validate_loop.py    # Feature extraction & validation
-│   ├── SNOW_feature_aggregation.py      # Optional: Feature aggregation
+├── scripts/             # Individual workflow step scripts
+│   ├── SNOW_feature_definition.py       # Step 1: Feature proposal & alignment
+│   ├── SNOW_extract_validate_loop.py    # Step 2: Feature extraction & validation
+│   ├── SNOW_feature_aggregation.py      # Step 3: Feature aggregation
 │   ├── SNOW_evaluation.py               # Optional: Model evaluation
 │   └── SNOW_expert_guided_LLM_extraction.py  # Alternative: Expert-guided extraction
 │
@@ -83,9 +89,8 @@ The framework provides a 3-step automated pipeline:
 │   ├── 02_discharge_notes.sql          # Step 2: Add discharge notes
 │   └── 03_structured_features.sql      # Step 3: Gather baseline features
 │
-├── main.py              # **RUN THIS**: Full pipeline orchestrator
+├── main.py              # **RUN THIS**: Full workflow orchestrator
 ├── DATA_SETUP.md        # **START HERE**: Data and API setup guide
-├── CONFIG.md            # Configuration guide (SNOW_config, evaluation_config)
 ├── README.md            # This file
 └── requirements.txt     # Python dependencies
 ```
@@ -140,7 +145,7 @@ git status  # Should NOT show data/*.csv or config/api_*.py (unless .template)
 
 ### Prerequisites Checklist
 
-Before running the SNOW pipeline, ensure you have:
+Before running the SNOW workflow, ensure you have:
 - [ ] Python 3.8+ installed
 - [ ] Access to an LLM API (Claude, OpenAI, or Gemini)
 - [ ] Clinical notes data (your own or use provided examples)
@@ -223,13 +228,13 @@ NOTES_COL = 'clinical_text'  # Name of text column
 ID_COL = 'patient_id'         # Name of ID column
 ```
 
-📖 **All configuration options**: See [CONFIG.md](CONFIG.md)
+📖 **All configuration options**: See [config/README.md](config/README.md)
 
-### Step 5: Run the Pipeline
+### Step 5: Run the Workflow
 
 **Choose your approach:**
 
-#### 🚀 Option A: Run Full Pipeline (Recommended)
+#### 🚀 Option A: Run Full Workflow (Recommended)
 
 Perfect for first-time users or when you want everything automated:
 
@@ -238,12 +243,11 @@ python main.py
 ```
 
 **What it does:**
-1. Proposes features from your clinical notes
-2. Aligns features by reviewing notes
-3. Extracts feature values from all notes
-4. Validates extracted values
+1. **Step 1**: Proposes features from your clinical notes and aligns them by reviewing actual data
+2. **Step 2**: Extracts feature values from all notes and validates accuracy
+3. **Step 3**: Aggregates multi-valued features into single values per patient
 
-**Output:** `saved_features/extracted_features_df_latest.csv` with all features for each patient
+**Output:** `extracted_features_MMDD.csv` with aggregated features ready for modeling
 
 ---
 
@@ -255,7 +259,7 @@ For more control or to resume from a specific step:
 cd scripts
 ```
 
-**1. Propose and Align Features**
+**Step 1: Feature Definition**
 
 ```bash
 cd scripts
@@ -265,7 +269,7 @@ python SNOW_feature_definition.py
 **Output:** `saved_features/unified_features_latest.json`
 **What it does:** Proposes features from notes, then aligns them by reviewing actual data
 
-**2. Extract and Validate Features**
+**Step 2: Feature Extraction & Validation**
 
 ```bash
 python SNOW_extract_validate_loop.py
@@ -274,21 +278,20 @@ python SNOW_extract_validate_loop.py
 **Output:** `saved_features/extracted_features_df_latest.csv`
 **What it does:** Extracts values for each feature from all notes, validates accuracy
 
----
-
-#### 🔬 Optional: Aggregation and Evaluation
-
-**3. Aggregate Features** *(Optional)*
+**Step 3: Feature Aggregation**
 
 ```bash
 python SNOW_feature_aggregation.py
 ```
 
 **Output:** `extracted_features_MMDD.csv`
-**What it does:** Aggregates multi-valued features (max, mean, etc.) into a single value per patient
-**When to use:** If you have features with multiple values per patient and want single aggregated values
+**What it does:** Aggregates multi-valued features (max, mean, etc.) into single values per patient for downstream modeling
 
-**4. Evaluate Models** *(Optional)*
+---
+
+#### 📊 Optional: Model Evaluation
+
+**Step 4: Evaluate Models** *(Optional)*
 
 ```bash
 python SNOW_evaluation.py
@@ -302,23 +305,23 @@ python SNOW_evaluation.py
 
 ### What's Next?
 
-After extracting features, you can:
+After running the 3-step workflow, you can:
 
-1. **Use features for modeling**: Load `saved_features/extracted_features_df_latest.csv` into your ML pipeline
+1. **Use features for modeling**: Load `extracted_features_MMDD.csv` into your ML pipeline
 2. **Evaluate performance** *(optional)*: Run `SNOW_evaluation.py` to compare against baselines (requires outcome variable)
 3. **Iterate on features**: Modify prompts in `config/prompts.py` and re-run
 4. **Try different domains**: Update dataset and descriptions in `config/SNOW_config.py`
 
-📖 **For configuration details**: See [CONFIG.md](CONFIG.md)
+📖 **For configuration details**: See [config/README.md](config/README.md)
 📖 **For troubleshooting**: See [DATA_SETUP.md](DATA_SETUP.md#troubleshooting)
 
 ---
 
-> **Note**: Script names reference "SNOW" (Scalable-Note-to-Outcome-Workflow) from the [research paper](https://arxiv.org/abs/2508.01956), but the system is **domain-agnostic** and works for any clinical prediction task.
+> **Note**: Script names reference "SNOW" (Scalable Note-to-Outcome Workflow) from the [research paper](https://arxiv.org/abs/2508.01956), but the system is **domain-agnostic** and works for any clinical prediction task.
 
 ## Configuration
 
-> 📖 **For detailed configuration instructions, see [CONFIG.md](CONFIG.md)**
+> 📖 **For detailed configuration instructions, see [config/README.md](config/README.md)**
 
 ### Processing Configuration
 
@@ -466,13 +469,14 @@ rm -rf checkpoints/
 If you use this code in your research, please cite:
 
 ```bibtex
-@article{wang2025agentbased,
-  title={Agent-Based Feature Generation from Clinical Notes for Outcome Prediction},
-  author={Wang, Jiayi and Vallon, Jacqueline Jil and Panjwani, Neil and Ling, Xi and Vij, Sushmita and Srinivas, Sandy and Leppert, John and Buyyounouski, Mark K. and Bayati, Mohsen},
+@article{wang2025scaling,
+  title={Scaling Clinician-Grade Feature Generation from Clinical Notes with Multi-Agent Language Models},
+  author={Wang, Jiayi and Vallon, Jacqueline Jil and Kotha, Nikhil V. and Panjwani, Neil and Ling, Xi and Redfield, Margaret and Vij, Sushmita and Srinivas, Sandy and Leppert, John and Buyyounouski, Mark K. and Bayati, Mohsen},
   journal={arXiv preprint arXiv:2508.01956},
   year={2025},
+  doi={10.48550/arXiv.2508.01956},
   url={https://arxiv.org/abs/2508.01956}
 }
 ```
 
-**Paper:** [Agent-Based Feature Generation from Clinical Notes for Outcome Prediction](https://arxiv.org/abs/2508.01956)
+**Paper:** [Scaling Clinician-Grade Feature Generation from Clinical Notes with Multi-Agent Language Models](https://arxiv.org/abs/2508.01956)

@@ -9,16 +9,63 @@ Based on evaluation_code_0701.ipynb nested_cv_evaluation_nlp function.
 
 from __future__ import annotations
 
-from typing import Dict, List, Any, Tuple
+from typing import Dict, List, Any, Tuple, Iterable
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import GridSearchCV, StratifiedKFold, RepeatedStratifiedKFold
+from sklearn.model_selection import GridSearchCV, StratifiedKFold, RepeatedStratifiedKFold, cross_val_predict
 from sklearn.preprocessing import StandardScaler
-from sklearn.base import clone
-from sklearn.metrics import roc_auc_score, accuracy_score
+from sklearn.base import BaseEstimator, ClassifierMixin, clone
+from sklearn.metrics import (
+    roc_auc_score,
+    accuracy_score,
+    average_precision_score,
+    f1_score,
+    confusion_matrix,
+)
 
 # Import custom logging print function
 from core.log_utils import print
+from core.evaluation import normalize_metrics, get_imputer
+
+
+class ThresholdWrapper(BaseEstimator, ClassifierMixin):
+    """Wrapper to treat threshold as a hyperparameter."""
+    def __init__(self, estimator, threshold: float = 0.5):
+        self.estimator = estimator
+        self.threshold = threshold
+
+    def get_params(self, deep: bool = True):
+        params = {"estimator": self.estimator, "threshold": self.threshold}
+        if deep and hasattr(self.estimator, "get_params"):
+            for k, v in self.estimator.get_params(deep=True).items():
+                params[f"estimator__{k}"] = v
+        return params
+
+    def set_params(self, **params):
+        if "threshold" in params:
+            self.threshold = params.pop("threshold")
+        est_params = {k[len("estimator__"):]: v for k, v in params.items() if k.startswith("estimator__")}
+        other = {k: v for k, v in params.items() if not k.startswith("estimator__")}
+        if est_params:
+            self.estimator = clone(self.estimator)
+            self.estimator.set_params(**est_params)
+        if "estimator" in other:
+            self.estimator = other["estimator"]
+        return self
+
+    def fit(self, X, y):
+        self.estimator_ = clone(self.estimator)
+        self.estimator_.fit(X, y)
+        if hasattr(self.estimator_, "classes_"):
+            self.classes_ = self.estimator_.classes_
+        return self
+
+    def predict_proba(self, X):
+        return self.estimator_.predict_proba(X)
+
+    def predict(self, X):
+        proba = self.predict_proba(X)[:, 1]
+        return (proba >= self.threshold).astype(int)
 
 
 def create_embedding_variants(
@@ -77,8 +124,9 @@ def inner_cv_nlp(
     scaler: StandardScaler,
     train_idx: np.ndarray,
     test_idx: np.ndarray,
-    random_seed: int = None
-) -> Tuple[str, float, float, Any, np.ndarray, np.ndarray]:
+    random_seed: int = None,
+    scoring: str = 'roc_auc'
+) -> Tuple[str, float, float, float, float, int, int, int, int, Any, np.ndarray, np.ndarray, Dict[str, Any], float]:
     """
     Inner CV loop that selects best embedding variant and hyperparameters.
 
@@ -104,7 +152,9 @@ def inner_cv_nlp(
         test_idx: Test indices
 
     Returns:
-        Tuple of (best_variant_name, test_auc, test_accuracy, feature_importance, y_true, y_pred_proba, best_params)
+        Tuple of (best_variant_name, test_auc, test_accuracy, test_aupr, test_f1,
+                  test_tp, test_fp, test_fn, fold_size, feature_importance,
+                  y_true, y_pred_proba, best_params, best_threshold)
     """
     best_overall_score = -1
     best_model = None
@@ -112,6 +162,7 @@ def inner_cv_nlp(
     best_X_test_processed = None
     best_cv_result = None
     best_params = None
+    best_threshold = 0.5
 
     y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
 
@@ -148,11 +199,18 @@ def inner_cv_nlp(
         if hasattr(model_clone, 'random_state') and random_seed is not None:
             model_clone.random_state = random_seed
 
+        tuned_estimator = model_clone
+        tuned_param_grid = param_grid
+        if scoring == 'f1' and hasattr(model_clone, 'predict_proba'):
+            tuned_estimator = ThresholdWrapper(model_clone)
+            tuned_param_grid = {f"estimator__{k}": v for k, v in param_grid.items()}
+            tuned_param_grid['threshold'] = np.linspace(0.1, 0.9, 17)
+
         grid_search = GridSearchCV(
-            estimator=model_clone,
-            param_grid=param_grid,
+            estimator=tuned_estimator,
+            param_grid=tuned_param_grid,
             cv=inner_cv,
-            scoring='roc_auc',
+            scoring=scoring,
             n_jobs=-1,
             verbose=0,
             return_train_score=True
@@ -169,10 +227,15 @@ def inner_cv_nlp(
             best_X_test_processed = X_test_processed
             best_cv_result = grid_search.cv_results_
             best_params = grid_search.best_params_
+            threshold_selected = best_params.get('threshold', 0.5)
+            best_threshold = threshold_selected
 
     # Evaluate best model on test set
     y_pred_proba = best_model.predict_proba(best_X_test_processed)[:, 1]
-    y_pred = best_model.predict(best_X_test_processed)
+    if scoring == 'f1' and hasattr(best_model, 'predict_proba'):
+        y_pred = (y_pred_proba >= best_threshold).astype(int)
+    else:
+        y_pred = best_model.predict(best_X_test_processed)
 
     test_auc = roc_auc_score(y_test, y_pred_proba)
     test_accuracy = accuracy_score(y_test, y_pred)
@@ -190,8 +253,27 @@ def inner_cv_nlp(
             'importance': np.abs(best_model.coef_[0])
         }).sort_values('importance', ascending=False)
 
+    test_aupr = average_precision_score(y_test, y_pred_proba)
+    test_f1 = f1_score(y_test, y_pred)
+    tn, fp, fn, tp = confusion_matrix(y_test, y_pred, labels=[0, 1]).ravel()
+
     # Return predictions along with other results
-    return best_variant_name, test_auc, test_accuracy, feature_importance, y_test.values, y_pred_proba, best_params
+    return (
+        best_variant_name,
+        test_auc,
+        test_accuracy,
+        test_aupr,
+        test_f1,
+        tp,
+        fp,
+        fn,
+        len(y_test),
+        feature_importance,
+        y_test.values,
+        y_pred_proba,
+        best_params,
+        best_threshold,
+    )
 
 
 def inner_cv_nlp_model_selection(
@@ -203,8 +285,9 @@ def inner_cv_nlp_model_selection(
     scaler: StandardScaler,
     train_idx: np.ndarray,
     test_idx: np.ndarray,
-    random_seed: int = None
-) -> Tuple[str, str, float, float, Any, np.ndarray, np.ndarray, Dict[str, Any]]:
+    random_seed: int = None,
+    scoring: str = 'roc_auc'
+) -> Tuple[str, str, float, float, float, float, int, int, int, int, Any, np.ndarray, np.ndarray, Dict[str, Any], float]:
     """
     Inner CV loop that selects best MODEL TYPE + embedding variant + hyperparameters.
 
@@ -229,7 +312,8 @@ def inner_cv_nlp_model_selection(
 
     Returns:
         Tuple of (best_model_name, best_variant_name, test_auc, test_accuracy,
-                 feature_importance, y_true, y_pred_proba, best_params)
+                  test_aupr, test_f1, test_tp, test_fp, test_fn, fold_size,
+                  feature_importance, y_true, y_pred_proba, best_params, best_threshold)
     """
     import importlib
 
@@ -245,6 +329,7 @@ def inner_cv_nlp_model_selection(
     best_variant_name = None
     best_X_test_processed = None
     best_params = None
+    best_threshold = 0.5
     all_scores = {}
 
     y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
@@ -291,13 +376,20 @@ def inner_cv_nlp_model_selection(
             # Create model instance
             model = model_class(**params)
 
-            # Grid search for hyperparameter tuning
+            # Grid search for hyperparameter tuning (with optional threshold)
             param_grid = model_config['param_grid']
+            tuned_estimator = model
+            tuned_param_grid = param_grid
+            if scoring == 'f1' and hasattr(model, 'predict_proba'):
+                tuned_estimator = ThresholdWrapper(model)
+                tuned_param_grid = {f"estimator__{k}": v for k, v in param_grid.items()}
+                tuned_param_grid['threshold'] = np.linspace(0.1, 0.9, 17)
+
             grid_search = GridSearchCV(
-                model,
-                param_grid,
+                tuned_estimator,
+                tuned_param_grid,
                 cv=inner_cv,
-                scoring='roc_auc',
+                scoring=scoring,
                 n_jobs=-1,
                 error_score='raise'
             )
@@ -307,6 +399,33 @@ def inner_cv_nlp_model_selection(
                 score = grid_search.best_score_
                 model_scores[variant_name] = score
 
+                threshold_selected = 0.5
+                if scoring == 'f1' and hasattr(grid_search.best_estimator_, 'predict_proba'):
+                    thresh_cv = inner_cv
+                    n_repeats = getattr(inner_cv, 'n_repeats', 1)
+                    if n_repeats and n_repeats > 1:
+                        thresh_cv = StratifiedKFold(
+                            n_splits=inner_cv.n_splits,
+                            shuffle=True,
+                            random_state=getattr(inner_cv, 'random_state', None)
+                        )
+
+                    thresholds = np.linspace(0.1, 0.9, 17)
+                    cv_probs = cross_val_predict(
+                        grid_search.best_estimator_,
+                        X_train_processed,
+                        y_train,
+                        cv=thresh_cv,
+                        method='predict_proba'
+                    )[:, 1]
+                    best_f1_val = -1
+                    for t in thresholds:
+                        preds_t = (cv_probs >= t).astype(int)
+                        f1_val = f1_score(y_train, preds_t)
+                        if f1_val > best_f1_val:
+                            best_f1_val = f1_val
+                            threshold_selected = t
+
                 # Update best if this combination is better
                 if score > best_overall_score:
                     best_overall_score = score
@@ -315,6 +434,7 @@ def inner_cv_nlp_model_selection(
                     best_variant_name = variant_name
                     best_X_test_processed = X_test_processed
                     best_params = grid_search.best_params_
+                    best_threshold = threshold_selected
 
             except Exception as e:
                 model_scores[variant_name] = np.nan
@@ -326,11 +446,17 @@ def inner_cv_nlp_model_selection(
         raise RuntimeError("All model/variant combinations failed during inner CV")
 
     # Evaluate best model on test set
-    y_pred = best_model_instance.predict(best_X_test_processed)
     y_pred_proba = best_model_instance.predict_proba(best_X_test_processed)[:, 1]
+    if scoring == 'f1':
+        y_pred = (y_pred_proba >= best_threshold).astype(int)
+    else:
+        y_pred = best_model_instance.predict(best_X_test_processed)
 
     test_auc = roc_auc_score(y_test, y_pred_proba)
     test_accuracy = accuracy_score(y_test, y_pred)
+    test_aupr = average_precision_score(y_test, y_pred_proba)
+    test_f1 = f1_score(y_test, y_pred)
+    tn, fp, fn, tp = confusion_matrix(y_test, y_pred, labels=[0, 1]).ravel()
 
     # Extract feature importance
     feature_importance = None
@@ -346,7 +472,7 @@ def inner_cv_nlp_model_selection(
         }).sort_values('importance', ascending=False)
 
     return (best_model_name, best_variant_name, test_auc, test_accuracy,
-            feature_importance, y_test.values, y_pred_proba, best_params)
+            test_aupr, test_f1, tp, fp, fn, len(y_test), feature_importance, y_test.values, y_pred_proba, best_params, best_threshold)
 
 
 def run_multiple_evaluations_nlp(
@@ -365,7 +491,9 @@ def run_multiple_evaluations_nlp(
     imputation_method: str = 'mean',
     imputation_params: Dict[str, Any] = None,
     verbosity: int = 1,
-    collect_predictions: bool = False  # Not currently used (NLP features excluded from permutation tests)
+    collect_predictions: bool = False,  # Not currently used (NLP features excluded from permutation tests)
+    scoring: str = 'roc_auc',
+    metrics: Iterable[str] | None = None,
 ) -> Dict[str, Any]:
     """
     Run nested CV evaluation multiple times with dimensionality selection for NLP embeddings.
@@ -385,7 +513,7 @@ def run_multiple_evaluations_nlp(
         n_inner: Number of inner CV folds
         n_inner_repeats: Number of inner CV repeats
         target_dims: List of target dimensionalities for variants
-        imputation_method: Imputation method ('mean', 'mice', 'svd', 'knn')
+        imputation_method: Imputation method ('mean', 'median', 'mice', 'svd', 'knn')
         imputation_params: Imputer parameters
         verbosity: Verbosity level
         collect_predictions: Whether to collect predictions (not used; NLP excluded from permutation tests)
@@ -393,6 +521,7 @@ def run_multiple_evaluations_nlp(
     Returns:
         Dictionary with aggregated results across all iterations
     """
+    metrics = normalize_metrics(metrics)
     # Create embedding variants (done once, used in all iterations)
     embedding_variants = create_embedding_variants(
         embedding_df=embedding_df,
@@ -410,9 +539,13 @@ def run_multiple_evaluations_nlp(
     seeds = rng.randint(0, 10000, size=n_iterations)
 
     # Storage for results
-    all_auc_scores = []
-    all_accuracy_scores = []
+    all_metric_scores = {m: [] for m in metrics}
+    all_tp_counts = []
+    all_fp_counts = []
+    all_fn_counts = []
+    all_fold_sizes = []
     all_best_variants = []
+    all_thresholds = []
 
     # Initialize iteration predictions storage if requested
     if collect_predictions:
@@ -428,7 +561,6 @@ def run_multiple_evaluations_nlp(
 
         # Impute baseline features once per iteration (embeddings have no NaN)
         # Use iteration seed for imputation (happens once per iteration, not per fold)
-        from core.evaluation import get_imputer
         imputer_params = imputation_params if imputation_params else {}
         imputer = get_imputer(imputation_method, random_state=seed, **imputer_params)
         baseline_df_imputed = pd.DataFrame(
@@ -438,9 +570,13 @@ def run_multiple_evaluations_nlp(
         )
 
         # Storage for this iteration's folds
-        iteration_auc_scores = []
-        iteration_accuracy_scores = []
+        iteration_metric_scores = {m: [] for m in metrics}
+        iteration_tp_counts = []
+        iteration_fp_counts = []
+        iteration_fn_counts = []
+        iteration_fold_sizes = []
         iteration_best_variants = []
+        iteration_thresholds = []
 
         # Initialize fold predictions storage for this iteration if requested
         if collect_predictions:
@@ -474,7 +610,8 @@ def run_multiple_evaluations_nlp(
             scaler = StandardScaler()
 
             # Inner CV: select best variant and hyperparameters
-            best_variant, test_auc, test_accuracy, feature_importance, y_true, y_pred_proba, best_params = inner_cv_nlp(
+            (best_variant, test_auc, test_accuracy, test_aupr, test_f1,
+             test_tp, test_fp, test_fn, fold_size, feature_importance, y_true, y_pred_proba, best_params, threshold_selected) = inner_cv_nlp(
                 embedding_variants=embedding_variants,
                 baseline_df=baseline_df_imputed,
                 y=y,
@@ -484,7 +621,8 @@ def run_multiple_evaluations_nlp(
                 scaler=scaler,
                 train_idx=train_idx,
                 test_idx=test_idx,
-                random_seed=model_seed
+                random_seed=model_seed,
+                scoring=scoring
             )
 
             if verbosity >= 1:
@@ -493,12 +631,33 @@ def run_multiple_evaluations_nlp(
                 print(f"  Outer fold {fold_idx + 1}/{n_outer}")
                 print(f"    Selected variant: {best_variant}")
                 print(f"    Selected params: {params_str}")
-                print(f"    Fold AUC: {test_auc:.4f}, Accuracy: {test_accuracy:.4f}")
+                fold_metric_parts = []
+                fold_values = {
+                    'auc': test_auc,
+                    'accuracy': test_accuracy,
+                    'aupr': test_aupr,
+                    'f1': test_f1
+                }
+                for metric in metrics:
+                    fold_metric_parts.append(f"{metric.upper()}: {fold_values[metric]:.4f}")
+                print(f"    Fold {', '.join(fold_metric_parts)}")
 
             # Store fold results
-            iteration_auc_scores.append(test_auc)
-            iteration_accuracy_scores.append(test_accuracy)
+            metric_values = {
+                'auc': test_auc,
+                'accuracy': test_accuracy,
+                'aupr': test_aupr,
+                'f1': test_f1
+            }
+            for metric in metrics:
+                iteration_metric_scores[metric].append(metric_values[metric])
+            iteration_tp_counts.append(test_tp)
+            iteration_fp_counts.append(test_fp)
+            iteration_fn_counts.append(test_fn)
+            iteration_fold_sizes.append(fold_size)
             iteration_best_variants.append(best_variant)
+            if scoring == 'f1':
+                iteration_thresholds.append(threshold_selected)
 
             # Store predictions if requested
             if collect_predictions:
@@ -509,9 +668,15 @@ def run_multiple_evaluations_nlp(
                 }
 
         # Store iteration results (mean across folds for this iteration)
-        all_auc_scores.append(np.mean(iteration_auc_scores))
-        all_accuracy_scores.append(np.mean(iteration_accuracy_scores))
+        for metric in metrics:
+            all_metric_scores[metric].append(np.mean(iteration_metric_scores[metric]))
+        all_tp_counts.extend(iteration_tp_counts)
+        all_fp_counts.extend(iteration_fp_counts)
+        all_fn_counts.extend(iteration_fn_counts)
+        all_fold_sizes.extend(iteration_fold_sizes)
         all_best_variants.extend(iteration_best_variants)
+        if scoring == 'f1':
+            all_thresholds.extend(iteration_thresholds)
 
         # Store fold predictions for this iteration
         if collect_predictions:
@@ -523,19 +688,44 @@ def run_multiple_evaluations_nlp(
             variant_counts = Counter(iteration_best_variants)
             variants_summary = ", ".join([f"{v}({c})" for v, c in variant_counts.items()])
             print(f"  Selected variants: {variants_summary}")
-            print(f"  Mean AUC: {np.mean(iteration_auc_scores):.4f}, Mean Accuracy: {np.mean(iteration_accuracy_scores):.4f}")
+            metric_summary = []
+            for metric in metrics:
+                metric_summary.append(f"{metric.upper()}: {np.mean(iteration_metric_scores[metric]):.4f}")
+            print(f"  Mean {'; '.join(metric_summary)}")
 
     # Calculate summary statistics (same format as standard evaluation)
     results = {
-        'auc_scores': all_auc_scores,
-        'accuracy_scores': all_accuracy_scores,
+        'tp_counts': all_tp_counts,
+        'fp_counts': all_fp_counts,
+        'fn_counts': all_fn_counts,
+        'fold_sizes': all_fold_sizes,
         'best_variants': all_best_variants,
-        'mean_auc': np.mean(all_auc_scores),
-        'std_auc': np.std(all_auc_scores),
-        'mean_accuracy': np.mean(all_accuracy_scores),
-        'std_accuracy': np.std(all_accuracy_scores),
+        'mean_tp': np.mean(all_tp_counts) if all_tp_counts else np.nan,
+        'std_tp': np.std(all_tp_counts) if all_tp_counts else np.nan,
+        'mean_fp': np.mean(all_fp_counts) if all_fp_counts else np.nan,
+        'std_fp': np.std(all_fp_counts) if all_fp_counts else np.nan,
+        'mean_fn': np.mean(all_fn_counts) if all_fn_counts else np.nan,
+        'std_fn': np.std(all_fn_counts) if all_fn_counts else np.nan,
+        'mean_tp_pct': np.mean([tp / fs * 100 for tp, fs in zip(all_tp_counts, all_fold_sizes)]) if all_fold_sizes else np.nan,
+        'std_tp_pct': np.std([tp / fs * 100 for tp, fs in zip(all_tp_counts, all_fold_sizes)]) if all_fold_sizes else np.nan,
+        'mean_fp_pct': np.mean([fp / fs * 100 for fp, fs in zip(all_fp_counts, all_fold_sizes)]) if all_fold_sizes else np.nan,
+        'std_fp_pct': np.std([fp / fs * 100 for fp, fs in zip(all_fp_counts, all_fold_sizes)]) if all_fold_sizes else np.nan,
+        'mean_fn_pct': np.mean([fn / fs * 100 for fn, fs in zip(all_fn_counts, all_fold_sizes)]) if all_fold_sizes else np.nan,
+        'std_fn_pct': np.std([fn / fs * 100 for fn, fs in zip(all_fn_counts, all_fold_sizes)]) if all_fold_sizes else np.nan,
         'seeds': seeds.tolist()  # Add seeds for reproducibility
     }
+
+    if scoring == 'f1' and all_thresholds:
+        results['thresholds'] = all_thresholds
+        results['mean_threshold'] = float(np.mean(all_thresholds))
+        results['std_threshold'] = float(np.std(all_thresholds))
+        results['mean_threshold'] = float(np.mean(all_thresholds))
+        results['std_threshold'] = float(np.std(all_thresholds))
+
+    for metric, scores in all_metric_scores.items():
+        results[f'{metric}_scores'] = scores
+        results[f'mean_{metric}'] = np.mean(scores)
+        results[f'std_{metric}'] = np.std(scores)
 
     # Add iteration predictions if requested
     if collect_predictions:
@@ -546,8 +736,11 @@ def run_multiple_evaluations_nlp(
         print(f"\n{'='*80}")
         print(f"FINAL RESULTS")
         print(f"{'='*80}")
-        print(f"  Mean AUC: {results['mean_auc']:.4f} ± {results['std_auc']:.4f}")
-        print(f"  Mean Accuracy: {results['mean_accuracy']:.4f} ± {results['std_accuracy']:.4f}")
+        for metric in metrics:
+            mean_key = f"mean_{metric}"
+            std_key = f"std_{metric}"
+            if mean_key in results and std_key in results:
+                print(f"  Mean {metric.upper()}: {results[mean_key]:.4f} ± {results[std_key]:.4f}")
 
         # Show most common variants
         from collections import Counter
@@ -576,7 +769,9 @@ def run_multiple_evaluations_nlp_model_selection(
     imputation_method: str = 'mean',
     imputation_params: Dict[str, Any] = None,
     verbosity: int = 0,
-    collect_predictions: bool = False
+    collect_predictions: bool = False,
+    scoring: str = 'roc_auc',
+    metrics: Iterable[str] | None = None,
 ) -> Dict[str, Any]:
     """
     Run nested CV with MODEL SELECTION + dimensionality selection for NLP features.
@@ -596,7 +791,7 @@ def run_multiple_evaluations_nlp_model_selection(
         n_inner: Number of inner CV folds
         n_inner_repeats: Number of inner CV repeats
         target_dims: List of target dimensionalities to try
-        imputation_method: Imputation method ('mean', 'mice', 'svd', 'knn')
+        imputation_method: Imputation method ('mean', 'median', 'mice', 'svd', 'knn')
         imputation_params: Additional imputation parameters
         verbosity: Verbosity level
         collect_predictions: Whether to collect predictions
@@ -604,11 +799,9 @@ def run_multiple_evaluations_nlp_model_selection(
     Returns:
         Dictionary with results including model selection statistics
     """
-    from sklearn.impute import SimpleImputer, KNNImputer
-    from sklearn.experimental import enable_iterative_imputer
-    from sklearn.impute import IterativeImputer
-    from core.ml_models import SVDImputer
     from collections import Counter
+
+    metrics = normalize_metrics(metrics)
 
     if imputation_params is None:
         imputation_params = {}
@@ -628,16 +821,24 @@ def run_multiple_evaluations_nlp_model_selection(
     # Storage for results
     all_auc_scores = []
     all_accuracy_scores = []
+    all_aupr_scores = []
+    all_f1_scores = []
+    all_tp_counts = []
+    all_fp_counts = []
+    all_fn_counts = []
+    all_fold_sizes = []
     all_best_models = []
     all_best_variants = []
     all_best_params = []
+    all_thresholds = []
 
     if collect_predictions:
         iteration_predictions = {}
 
+    seeds = [None if master_seed is None else master_seed + i * 1000 for i in range(n_iterations)]
+
     # Outer CV iterations
-    for i in range(n_iterations):
-        iteration_seed = None if master_seed is None else master_seed + i * 1000
+    for i, iteration_seed in enumerate(seeds):
 
         if verbosity >= 1:
             print(f"Iteration {i+1}/{n_iterations} (seed={iteration_seed})")
@@ -659,24 +860,8 @@ def run_multiple_evaluations_nlp_model_selection(
             fold_predictions = {}
 
         # Impute baseline features
-        if imputation_method == 'mean':
-            imputer = SimpleImputer(strategy='mean')
-        elif imputation_method == 'mice':
-            imputer = IterativeImputer(
-                max_iter=imputation_params.get('max_iter', 10),
-                random_state=iteration_seed
-            )
-        elif imputation_method == 'svd':
-            imputer = SVDImputer(
-                n_components=imputation_params.get('n_components', 3),
-                max_iter=imputation_params.get('max_iter', 500),
-                tol=imputation_params.get('tol', 1e-4),
-                random_state=iteration_seed
-            )
-        elif imputation_method == 'knn':
-            imputer = KNNImputer(n_neighbors=imputation_params.get('n_neighbors', 5))
-        else:
-            raise ValueError(f"Unknown imputation method: {imputation_method}")
+        imputer_params = imputation_params if imputation_params else {}
+        imputer = get_imputer(imputation_method, random_state=iteration_seed, **imputer_params)
 
         baseline_imputed = pd.DataFrame(
             imputer.fit_transform(baseline_df),
@@ -692,7 +877,8 @@ def run_multiple_evaluations_nlp_model_selection(
 
             # Inner CV: Model + variant selection
             (best_model_name, best_variant_name, test_auc, test_accuracy,
-             feature_importance, y_true, y_pred_proba, best_params) = inner_cv_nlp_model_selection(
+             test_aupr, test_f1, test_tp, test_fp, test_fn, fold_size,
+             feature_importance, y_true, y_pred_proba, best_params, threshold_selected) = inner_cv_nlp_model_selection(
                 embedding_variants=embedding_variants,
                 baseline_df=baseline_imputed,
                 y=y,
@@ -701,14 +887,23 @@ def run_multiple_evaluations_nlp_model_selection(
                 scaler=scaler,
                 train_idx=train_idx,
                 test_idx=test_idx,
-                random_seed=fold_seed
+                random_seed=fold_seed,
+                scoring=scoring
             )
 
             all_auc_scores.append(test_auc)
             all_accuracy_scores.append(test_accuracy)
+            all_aupr_scores.append(test_aupr)
+            all_f1_scores.append(test_f1)
+            all_tp_counts.append(test_tp)
+            all_fp_counts.append(test_fp)
+            all_fn_counts.append(test_fn)
+            all_fold_sizes.append(fold_size)
             all_best_models.append(best_model_name)
             all_best_variants.append(best_variant_name)
             all_best_params.append(best_params)
+            if scoring == 'f1':
+                all_thresholds.append(threshold_selected)
 
             if verbosity >= 2:
                 print(f"  Fold {fold_idx+1}: {best_model_name} + {best_variant_name} -> AUC={test_auc:.4f}")
@@ -725,7 +920,19 @@ def run_multiple_evaluations_nlp_model_selection(
             iteration_predictions[f'iteration_{i}'] = fold_predictions
 
         if verbosity >= 1:
-            print(f"  Iteration {i+1} mean AUC: {np.mean(all_auc_scores[i*n_outer:(i+1)*n_outer]):.4f}\n")
+            auc_slice = all_auc_scores[i*n_outer:(i+1)*n_outer]
+            acc_slice = all_accuracy_scores[i*n_outer:(i+1)*n_outer]
+            aupr_slice = all_aupr_scores[i*n_outer:(i+1)*n_outer]
+            f1_slice = all_f1_scores[i*n_outer:(i+1)*n_outer]
+            metric_slices = {
+                'auc': auc_slice,
+                'accuracy': acc_slice,
+                'aupr': aupr_slice,
+                'f1': f1_slice
+            }
+            for metric in metrics:
+                print(f"  Iteration {i+1} mean {metric.upper()}: {np.mean(metric_slices[metric]):.4f}")
+            print()
 
     # Aggregate results
     model_counts = Counter(all_best_models)
@@ -734,10 +941,32 @@ def run_multiple_evaluations_nlp_model_selection(
     results = {
         'all_auc_scores': all_auc_scores,
         'all_accuracy_scores': all_accuracy_scores,
+        'all_aupr_scores': all_aupr_scores,
+        'all_f1_scores': all_f1_scores,
+        'tp_counts': all_tp_counts,
+        'fp_counts': all_fp_counts,
+        'fn_counts': all_fn_counts,
+        'fold_sizes': all_fold_sizes,
         'mean_auc': np.mean(all_auc_scores),
         'std_auc': np.std(all_auc_scores),
         'mean_accuracy': np.mean(all_accuracy_scores),
         'std_accuracy': np.std(all_accuracy_scores),
+        'mean_aupr': np.mean(all_aupr_scores),
+        'std_aupr': np.std(all_aupr_scores),
+        'mean_f1': np.mean(all_f1_scores),
+        'std_f1': np.std(all_f1_scores),
+        'mean_tp': np.mean(all_tp_counts) if all_tp_counts else np.nan,
+        'std_tp': np.std(all_tp_counts) if all_tp_counts else np.nan,
+        'mean_fp': np.mean(all_fp_counts) if all_fp_counts else np.nan,
+        'std_fp': np.std(all_fp_counts) if all_fp_counts else np.nan,
+        'mean_fn': np.mean(all_fn_counts) if all_fn_counts else np.nan,
+        'std_fn': np.std(all_fn_counts) if all_fn_counts else np.nan,
+        'mean_tp_pct': np.mean([tp / fs * 100 for tp, fs in zip(all_tp_counts, all_fold_sizes)]) if all_fold_sizes else np.nan,
+        'std_tp_pct': np.std([tp / fs * 100 for tp, fs in zip(all_tp_counts, all_fold_sizes)]) if all_fold_sizes else np.nan,
+        'mean_fp_pct': np.mean([fp / fs * 100 for fp, fs in zip(all_fp_counts, all_fold_sizes)]) if all_fold_sizes else np.nan,
+        'std_fp_pct': np.std([fp / fs * 100 for fp, fs in zip(all_fp_counts, all_fold_sizes)]) if all_fold_sizes else np.nan,
+        'mean_fn_pct': np.mean([fn / fs * 100 for fn, fs in zip(all_fn_counts, all_fold_sizes)]) if all_fold_sizes else np.nan,
+        'std_fn_pct': np.std([fn / fs * 100 for fn, fs in zip(all_fn_counts, all_fold_sizes)]) if all_fold_sizes else np.nan,
         'selected_models': all_best_models,
         'selected_variants': all_best_variants,
         'selected_params': all_best_params,
@@ -749,13 +978,21 @@ def run_multiple_evaluations_nlp_model_selection(
     if collect_predictions:
         results['iteration_predictions'] = iteration_predictions
 
+    if scoring == 'f1' and all_thresholds:
+        results['thresholds'] = all_thresholds
+        results['mean_threshold'] = float(np.mean(all_thresholds))
+        results['std_threshold'] = float(np.std(all_thresholds))
+
     # Print summary
     if verbosity >= 1:
         print(f"\n{'='*80}")
         print(f"MODEL SELECTION SUMMARY - {embedding_name}")
         print(f"{'='*80}")
-        print(f"Mean AUC: {results['mean_auc']:.4f} ± {results['std_auc']:.4f}")
-        print(f"Mean Accuracy: {results['mean_accuracy']:.4f} ± {results['std_accuracy']:.4f}")
+        for metric in metrics:
+            mean_key = f"mean_{metric}"
+            std_key = f"std_{metric}"
+            if mean_key in results and std_key in results:
+                print(f"Mean {metric.upper()}: {results[mean_key]:.4f} ± {results[std_key]:.4f}")
         print(f"\nModel Selection (top 5):")
         for model, count in model_counts.most_common(5):
             percentage = (count / len(all_best_models)) * 100
@@ -784,7 +1021,9 @@ def run_multiple_evaluations_rfg(
     imputation_method: str = 'mean',
     imputation_params: Dict[str, Any] = None,
     verbosity: int = 1,
-    collect_predictions: bool = False
+    collect_predictions: bool = False,
+    scoring: str = 'roc_auc',
+    metrics: Iterable[str] | None = None,
 ) -> Dict[str, Any]:
     """
     Run nested CV evaluation with Representative Feature Generation (RFG).
@@ -812,7 +1051,7 @@ def run_multiple_evaluations_rfg(
         n_inner: Number of inner CV folds
         n_inner_repeats: Number of inner CV repeats
         target_dims: List of target dimensionalities for variants
-        imputation_method: Imputation method ('mean', 'mice', 'svd', 'knn')
+        imputation_method: Imputation method ('mean', 'median', 'mice', 'svd', 'knn')
         imputation_params: Imputer parameters
         verbosity: Verbosity level
 
@@ -821,6 +1060,8 @@ def run_multiple_evaluations_rfg(
     """
     from sklearn.preprocessing import StandardScaler
     from sklearn.model_selection import StratifiedKFold, RepeatedStratifiedKFold
+
+    metrics = normalize_metrics(metrics)
 
     if verbosity >= 1:
         print(f"\nRunning RFG evaluation with EMBEDDING + DIMENSIONALITY selection...")
@@ -840,7 +1081,14 @@ def run_multiple_evaluations_rfg(
     # Storage for results across iterations
     all_auc_scores = []
     all_accuracy_scores = []
+    all_aupr_scores = []
+    all_f1_scores = []
+    all_tp_counts = []
+    all_fp_counts = []
+    all_fn_counts = []
+    all_fold_sizes = []
     all_best_variants = []
+    all_thresholds = []
 
     # Initialize iteration predictions storage if requested
     if collect_predictions:
@@ -860,7 +1108,6 @@ def run_multiple_evaluations_rfg(
 
         # Impute baseline features once per iteration (embeddings have no NaN)
         # Use iteration seed for imputation (happens once per iteration, not per fold)
-        from core.evaluation import get_imputer
         imputer_params = imputation_params if imputation_params else {}
         imputer = get_imputer(imputation_method, random_state=seed, **imputer_params)
         baseline_df_imputed = pd.DataFrame(
@@ -872,7 +1119,14 @@ def run_multiple_evaluations_rfg(
         # Storage for this iteration's folds
         iteration_auc_scores = []
         iteration_accuracy_scores = []
+        iteration_aupr_scores = []
+        iteration_f1_scores = []
+        iteration_tp_counts = []
+        iteration_fp_counts = []
+        iteration_fn_counts = []
+        iteration_fold_sizes = []
         iteration_best_variants = []
+        iteration_thresholds = []
 
         # Initialize fold predictions storage for this iteration if requested
         if collect_predictions:
@@ -906,7 +1160,8 @@ def run_multiple_evaluations_rfg(
             scaler = StandardScaler()
 
             # Inner CV: select best embedding variant (embedding type + dimensionality)
-            best_variant, test_auc, test_accuracy, feature_importance, y_true, y_pred_proba, best_params = inner_cv_nlp(
+            (best_variant, test_auc, test_accuracy, test_aupr, test_f1,
+             test_tp, test_fp, test_fn, fold_size, feature_importance, y_true, y_pred_proba, best_params, threshold_selected) = inner_cv_nlp(
                 embedding_variants=all_variants,  # All embeddings + all variants
                 baseline_df=baseline_df_imputed,
                 y=y,
@@ -916,7 +1171,8 @@ def run_multiple_evaluations_rfg(
                 scaler=scaler,
                 train_idx=train_idx,
                 test_idx=test_idx,
-                random_seed=model_seed
+                random_seed=model_seed,
+                scoring=scoring
             )
 
             if verbosity >= 1:
@@ -930,7 +1186,15 @@ def run_multiple_evaluations_rfg(
             # Store fold results
             iteration_auc_scores.append(test_auc)
             iteration_accuracy_scores.append(test_accuracy)
+            iteration_aupr_scores.append(test_aupr)
+            iteration_f1_scores.append(test_f1)
+            iteration_tp_counts.append(test_tp)
+            iteration_fp_counts.append(test_fp)
+            iteration_fn_counts.append(test_fn)
+            iteration_fold_sizes.append(fold_size)
             iteration_best_variants.append(best_variant)
+            if scoring == 'f1':
+                iteration_thresholds.append(threshold_selected)
 
             # Store predictions if requested
             if collect_predictions:
@@ -943,7 +1207,15 @@ def run_multiple_evaluations_rfg(
         # Store iteration results
         all_auc_scores.append(np.mean(iteration_auc_scores))
         all_accuracy_scores.append(np.mean(iteration_accuracy_scores))
+        all_aupr_scores.append(np.mean(iteration_aupr_scores))
+        all_f1_scores.append(np.mean(iteration_f1_scores))
+        all_tp_counts.extend(iteration_tp_counts)
+        all_fp_counts.extend(iteration_fp_counts)
+        all_fn_counts.extend(iteration_fn_counts)
+        all_fold_sizes.extend(iteration_fold_sizes)
         all_best_variants.extend(iteration_best_variants)
+        if scoring == 'f1':
+            all_thresholds.extend(iteration_thresholds)
 
         # Store fold predictions for this iteration
         if collect_predictions:
@@ -955,19 +1227,51 @@ def run_multiple_evaluations_rfg(
             variant_counts = Counter(iteration_best_variants)
             variants_summary = ", ".join([f"{v}({c})" for v, c in variant_counts.items()])
             print(f"  Selected variants: {variants_summary}")
-            print(f"  Mean AUC: {np.mean(iteration_auc_scores):.4f}, Mean Accuracy: {np.mean(iteration_accuracy_scores):.4f}")
+            metric_lists = {
+                'auc': iteration_auc_scores,
+                'accuracy': iteration_accuracy_scores,
+                'aupr': iteration_aupr_scores,
+                'f1': iteration_f1_scores
+            }
+            metric_summary = [f"{metric.upper()}: {np.mean(metric_lists[metric]):.4f}" for metric in metrics]
+            print(f"  Mean {'; '.join(metric_summary)}")
 
     # Calculate summary statistics
     results = {
         'auc_scores': all_auc_scores,
         'accuracy_scores': all_accuracy_scores,
+        'aupr_scores': all_aupr_scores,
+        'f1_scores': all_f1_scores,
+        'tp_counts': all_tp_counts,
+        'fp_counts': all_fp_counts,
+        'fn_counts': all_fn_counts,
+        'fold_sizes': all_fold_sizes,
         'best_variants': all_best_variants,
         'mean_auc': np.mean(all_auc_scores),
         'std_auc': np.std(all_auc_scores),
         'mean_accuracy': np.mean(all_accuracy_scores),
         'std_accuracy': np.std(all_accuracy_scores),
+        'mean_aupr': np.mean(all_aupr_scores),
+        'std_aupr': np.std(all_aupr_scores),
+        'mean_f1': np.mean(all_f1_scores),
+        'std_f1': np.std(all_f1_scores),
+        'mean_tp': np.mean(all_tp_counts) if all_tp_counts else np.nan,
+        'std_tp': np.std(all_tp_counts) if all_tp_counts else np.nan,
+        'mean_fp': np.mean(all_fp_counts) if all_fp_counts else np.nan,
+        'std_fp': np.std(all_fp_counts) if all_fp_counts else np.nan,
+        'mean_fn': np.mean(all_fn_counts) if all_fn_counts else np.nan,
+        'std_fn': np.std(all_fn_counts) if all_fn_counts else np.nan,
+        'mean_tp_pct': np.mean([tp / fs * 100 for tp, fs in zip(all_tp_counts, all_fold_sizes)]) if all_fold_sizes else np.nan,
+        'std_tp_pct': np.std([tp / fs * 100 for tp, fs in zip(all_tp_counts, all_fold_sizes)]) if all_fold_sizes else np.nan,
+        'mean_fp_pct': np.mean([fp / fs * 100 for fp, fs in zip(all_fp_counts, all_fold_sizes)]) if all_fold_sizes else np.nan,
+        'std_fp_pct': np.std([fp / fs * 100 for fp, fs in zip(all_fp_counts, all_fold_sizes)]) if all_fold_sizes else np.nan,
+        'mean_fn_pct': np.mean([fn / fs * 100 for fn, fs in zip(all_fn_counts, all_fold_sizes)]) if all_fold_sizes else np.nan,
+        'std_fn_pct': np.std([fn / fs * 100 for fn, fs in zip(all_fn_counts, all_fold_sizes)]) if all_fold_sizes else np.nan,
         'seeds': seeds.tolist()  # Add seeds for reproducibility
     }
+
+    if scoring == 'f1' and all_thresholds:
+        results['thresholds'] = all_thresholds
 
     # Add iteration predictions if requested
     if collect_predictions:
@@ -978,8 +1282,11 @@ def run_multiple_evaluations_rfg(
         print(f"\n{'='*80}")
         print(f"FINAL RESULTS (RFG)")
         print(f"{'='*80}")
-        print(f"  Mean AUC: {results['mean_auc']:.4f} ± {results['std_auc']:.4f}")
-        print(f"  Mean Accuracy: {results['mean_accuracy']:.4f} ± {results['std_accuracy']:.4f}")
+        for metric in metrics:
+            mean_key = f"mean_{metric}"
+            std_key = f"std_{metric}"
+            if mean_key in results and std_key in results:
+                print(f"  Mean {metric.upper()}: {results[mean_key]:.4f} ± {results[std_key]:.4f}")
 
         # Show most common variants
         from collections import Counter
